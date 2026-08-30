@@ -143,6 +143,32 @@ public sealed class UpdateService
             }
         }
 
+        try
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Get, "https://api.github.com/repos/DimanDimtchik/klarwin/releases/latest");
+            request.Headers.TryAddWithoutValidation("User-Agent", "KlarWin");
+            using var response = await Http.SendAsync(request, cancellationToken);
+            response.EnsureSuccessStatusCode();
+            var apiJson = await response.Content.ReadAsStringAsync(cancellationToken);
+            using var doc = JsonDocument.Parse(apiJson);
+            var tag = doc.RootElement.GetProperty("tag_name").GetString()?.TrimStart('v') ?? "";
+            var zip = doc.RootElement.GetProperty("assets").EnumerateArray()
+                .Select(a => a.GetProperty("browser_download_url").GetString() ?? "")
+                .FirstOrDefault(u => u.EndsWith("KlarWin-Setup.zip", StringComparison.OrdinalIgnoreCase))
+                ?? $"https://github.com/DimanDimtchik/klarwin/releases/download/v{tag}/KlarWin-Setup.zip";
+            return JsonSerializer.Serialize(new
+            {
+                version = tag,
+                url = zip,
+                notes = doc.RootElement.TryGetProperty("body", out var body) ? body.GetString() ?? "" : "",
+                published = doc.RootElement.TryGetProperty("published_at", out var p) ? p.GetString() ?? "" : ""
+            });
+        }
+        catch (Exception ex)
+        {
+            last = ex;
+        }
+
         throw last ?? new InvalidOperationException("version.json nicht erreichbar.");
     }
 
