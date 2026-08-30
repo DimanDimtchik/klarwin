@@ -11,7 +11,7 @@ public sealed class CleanupResult
     public IReadOnlyList<string> Notes { get; init; } = [];
 }
 
-public sealed class CleanupService
+public sealed partial class CleanupService
 {
     public CleanupResult CleanNow(IProgress<string>? progress = null)
     {

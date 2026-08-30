@@ -12,4 +12,7 @@
     <Company>IQ-Strom GmbH</Company>
     <Description>Windows aufräumen, beschleunigen und im Blick behalten.</Description>
   </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="System.Management" Version="9.0.0" />
+  </ItemGroup>
 </Project>
