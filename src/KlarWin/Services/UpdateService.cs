@@ -21,6 +21,7 @@ public sealed class UpdateService
 {
     public const string ManifestUrlPrimary = "https://dg.ganz-soft.de/klarwin/version.json";
     public const string ManifestUrlFallback = "https://ganz-soft.de/klarwin/version.json";
+    public const string ManifestUrlGithub = "https://github.com/DimanDimtchik/klarwin/releases/latest/download/version.json";
 
     private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(20) };
 
@@ -128,7 +129,7 @@ public sealed class UpdateService
     private static async Task<string> GetManifestAsync(CancellationToken cancellationToken)
     {
         Exception? last = null;
-        foreach (var url in new[] { ManifestUrlPrimary, ManifestUrlFallback })
+        foreach (var url in new[] { ManifestUrlPrimary, ManifestUrlFallback, ManifestUrlGithub })
         {
             try
             {
