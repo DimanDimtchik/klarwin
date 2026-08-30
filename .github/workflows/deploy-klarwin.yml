@@ -5,7 +5,7 @@ on:
 
 jobs:
   deploy:
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -15,23 +15,25 @@ jobs:
 
       - name: Publish
         run: |
-          dotnet publish src/KlarWin/KlarWin.csproj -c Release -r win-x64 --self-contained true \
-            -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true \
-            -p:EnableCompressionInSingleFile=true \
+          dotnet publish src/KlarWin/KlarWin.csproj -c Release -r win-x64 --self-contained true `
+            -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true `
+            -p:EnableCompressionInSingleFile=true `
             -o dist/KlarWin
-          cp deploy/dg.ganz-soft.de/klarwin/Installieren.bat dist/KlarWin/Installieren.bat
+          Copy-Item deploy/dg.ganz-soft.de/klarwin/Installieren.bat dist/KlarWin/Installieren.bat
 
       - name: Package
+        shell: pwsh
         run: |
-          mkdir -p out
-          cp deploy/dg.ganz-soft.de/klarwin/version.json out/
-          cp deploy/dg.ganz-soft.de/klarwin/index.html out/
-          cp docs/KlarWin-Handbuch.pdf out/
-          cp docs/KlarWin-Handbuch.html out/
-          (cd dist/KlarWin && zip -9 ../../out/KlarWin-Setup.zip KlarWin.exe Installieren.bat)
-          ls -lah out
+          New-Item -ItemType Directory -Force -Path out | Out-Null
+          Copy-Item deploy/dg.ganz-soft.de/klarwin/version.json out/
+          Copy-Item deploy/dg.ganz-soft.de/klarwin/index.html out/
+          Copy-Item docs/KlarWin-Handbuch.pdf out/
+          Copy-Item docs/KlarWin-Handbuch.html out/
+          Compress-Archive -Path dist/KlarWin/KlarWin.exe,dist/KlarWin/Installieren.bat -DestinationPath out/KlarWin-Setup.zip -Force
+          Get-ChildItem out | Format-Table Name, Length
 
       - name: Setup SSH
+        shell: bash
         env:
           KEY: ${{ secrets.DG_ALLINKL_SSH_PRIVATE_KEY }}
           SSH_USER: ${{ secrets.DG_ALLINKL_SSH_USER }}
@@ -55,6 +57,7 @@ jobs:
           ssh -o BatchMode=yes -o ConnectTimeout=25 allinkl 'echo SSH_OK; hostname; pwd'
 
       - name: Upload
+        shell: bash
         run: |
           REMOTE=www/htdocs/w0217246
           ssh allinkl "mkdir -p $REMOTE/dg.ganz-soft.de/klarwin $REMOTE/ganz-soft.de/klarwin"
