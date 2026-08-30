@@ -1,24 +1,28 @@
 # KlarWin
 
-Windows-Werkzeug mit vier Kacheln: Speicher bereinigen, Tempo anheben, Leistung anzeigen, Verknüpfungspfeile ausblenden.
+Windows-Werkzeug von GanzSoft: aufräumen, sichern, Netzwerk (Router via UPnP/IGD) und KI-Last.
 
-Keine Registry-Wunderkuren. Es werden nur temporäre Dateien, Caches und Einstellungen angefasst, die Windows selbst auch aufräumt.
-
-## Start
+## Start (Entwicklung)
 
 ```powershell
 dotnet run --project src/KlarWin/KlarWin.csproj
 ```
 
+## Installation (Release)
+
+Paket: `deploy/dg.ganz-soft.de/klarwin/KlarWin-Setup.zip`  
+Handbuch: `deploy/dg.ganz-soft.de/klarwin/KlarWin-Handbuch.pdf`
+
+```powershell
+# Neu bauen + zippen, dann hochladen:
+.\deploy\deploy-klarwin.ps1
+```
+
+Download-URL (nach Deploy): https://dg.ganz-soft.de/klarwin/  
+Produktseite: https://ganz-soft.de/klarwin/
+
 ## Kacheln
 
-1. **Bereinigen** — Benutzer-Temp, Windows-Temp, Delivery-Optimization-Cache, Papierkorb
-2. **Beschleunigen** — Energieplan Hochleistung, weniger Animationen, DNS-Flush
-3. **Leistung** — CPU, RAM und freier Speicher live
-4. **Verknüpfungen** — Overlay-Pfeil per leerem Icon ausblenden (Administrator)
+Netzwerk und KI-Last sind **zwei getrennte Kacheln**. Router-Daten über Standard-UPnP/IGD (nicht nur Fritz!Box); ohne UPnP bleiben PC-Netz und LAN-Nachbarn.
 
-## Hinweise
-
-- Verknüpfungspfeile brauchen Administratorrechte. Nach Windows-Updates kann der Pfeil zurückkommen.
-- Visuelle Effekte greifen vollständig nach Abmelden.
-- Das Programm löscht keine Dokumente, Fotos oder installierten Programme.
+Siehe Handbuch-PDF für alle zehn Kacheln und Sicherheitshinweise.

@@ -25,7 +25,9 @@
             <TextBlock FontFamily="Bahnschrift" FontSize="64" FontWeight="SemiBold"
                        Text="KlarWin" LineHeight="64"/>
             <TextBlock Margin="0,8,0,0" FontSize="20" Foreground="#4A5C54"
-                       Text="Aufräumen, sichern, wiederherstellen — eine Sache pro Kachel."/>
+                       Text="Aufräumen, sichern, Netz und KI-Last — eine Sache pro Kachel."/>
+            <TextBlock x:Name="VersionLabel" Margin="0,6,0,0" FontFamily="Bahnschrift" FontSize="13" Foreground="#8C6239"
+                       Text=""/>
         </StackPanel>
 
         <ScrollViewer Grid.Row="1" Margin="0,24,0,16" VerticalScrollBarVisibility="Auto"
@@ -106,7 +108,7 @@
                     </StackPanel>
                 </Button>
 
-                <Button Style="{StaticResource TileButton}" Margin="0,0,10,0" Click="OnRecoverClick">
+                <Button Style="{StaticResource TileButton}" Margin="0,0,10,10" Click="OnRecoverClick">
                     <StackPanel>
                         <TextBlock FontFamily="Bahnschrift" FontSize="13" Foreground="#8C6239" Text="07  Retten"/>
                         <TextBlock FontFamily="Bahnschrift" FontSize="28" Margin="0,8,0,6" Text="Wiederherstellen"/>
@@ -114,7 +116,7 @@
                                    Text="Dateien aus dem Papierkorb zurückholen, bevor er geleert wird."/>
                     </StackPanel>
                 </Button>
-                <Button Style="{StaticResource TileButton}" Margin="5,0,5,0" Click="OnKeysClick">
+                <Button Style="{StaticResource TileButton}" Margin="5,0,5,10" Click="OnKeysClick">
                     <StackPanel>
                         <TextBlock FontFamily="Bahnschrift" FontSize="13" Foreground="#8C6239" Text="08  Lizenzen"/>
                         <TextBlock FontFamily="Bahnschrift" FontSize="28" Margin="0,8,0,6" Text="Keys sichern"/>
@@ -122,14 +124,77 @@
                                    Text="Windows-, Office- und weitere Software-Keys lokal als Textdatei sichern."/>
                     </StackPanel>
                 </Button>
-                <Border Margin="10,0,0,0" Background="#E8F0EA" BorderBrush="#C3D1C8" BorderThickness="1" Padding="28,26">
-                    <StackPanel VerticalAlignment="Center">
-                        <TextBlock FontFamily="Bahnschrift" FontSize="13" Foreground="#8C6239" Text="Hinweis"/>
-                        <TextBlock FontFamily="Bahnschrift" FontSize="22" Margin="0,8,0,6" Text="Sicherheit zuerst"/>
-                        <TextBlock FontSize="15" TextWrapping="Wrap" Foreground="#4A5C54"
-                                   Text="Überschreiben betrifft nur freien Speicher — nicht deine Dateien. Keys bleiben auf diesem PC."/>
+                <Button Style="{StaticResource TileButton}" Margin="10,0,0,10" Click="OnNetworkClick">
+                    <StackPanel>
+                        <TextBlock FontFamily="Bahnschrift" FontSize="13" Foreground="#8C6239" Text="09  Netz"/>
+                        <TextBlock FontFamily="Bahnschrift" FontSize="28" Margin="0,8,0,6" Text="Netzwerk"/>
+                        <Grid Margin="0,6,0,0">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                            </Grid.RowDefinitions>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="44"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="↓"/>
+                            <Border Grid.Column="1" Height="8" Background="#D5E0D8" Margin="8,6,10,0">
+                                <Rectangle x:Name="NetDownBar" Width="0" HorizontalAlignment="Left" Fill="#3B5A72"/>
+                            </Border>
+                            <TextBlock x:Name="NetDownLabel" Grid.Column="2" Text="—"/>
+                            <TextBlock Grid.Row="1" Text="↑" Margin="0,8,0,0"/>
+                            <Border Grid.Row="1" Grid.Column="1" Height="8" Background="#D5E0D8" Margin="8,14,10,0">
+                                <Rectangle x:Name="NetUpBar" Width="0" HorizontalAlignment="Left" Fill="#8C6239"/>
+                            </Border>
+                            <TextBlock x:Name="NetUpLabel" Grid.Row="1" Grid.Column="2" Margin="0,8,0,0" Text="—"/>
+                            <TextBlock Grid.Row="2" Text="Ping" Margin="0,8,0,0"/>
+                            <TextBlock x:Name="NetPingLabel" Grid.Row="2" Grid.Column="1" Grid.ColumnSpan="2" Margin="8,8,0,0" Text="—"/>
+                        </Grid>
                     </StackPanel>
-                </Border>
+                </Button>
+                <Button Style="{StaticResource TileButton}" Margin="0,0,10,0" Click="OnAiClick">
+                    <StackPanel>
+                        <TextBlock FontFamily="Bahnschrift" FontSize="13" Foreground="#8C6239" Text="10  KI"/>
+                        <TextBlock FontFamily="Bahnschrift" FontSize="28" Margin="0,8,0,6" Text="KI-Last"/>
+                        <Grid Margin="0,6,0,0">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                            </Grid.RowDefinitions>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="44"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="CPU"/>
+                            <Border Grid.Column="1" Height="8" Background="#D5E0D8" Margin="8,6,10,0">
+                                <Rectangle x:Name="AiCpuBar" Width="0" HorizontalAlignment="Left" Fill="#2F6A4A"/>
+                            </Border>
+                            <TextBlock x:Name="AiCpuLabel" Grid.Column="2" Text="—"/>
+                            <TextBlock Grid.Row="1" Text="RAM" Margin="0,8,0,0"/>
+                            <Border Grid.Row="1" Grid.Column="1" Height="8" Background="#D5E0D8" Margin="8,14,10,0">
+                                <Rectangle x:Name="AiRamBar" Width="0" HorizontalAlignment="Left" Fill="#8C6239"/>
+                            </Border>
+                            <TextBlock x:Name="AiRamLabel" Grid.Row="1" Grid.Column="2" Margin="0,8,0,0" Text="—"/>
+                            <TextBlock Grid.Row="2" Text="GPU" Margin="0,8,0,0"/>
+                            <Border Grid.Row="2" Grid.Column="1" Height="8" Background="#D5E0D8" Margin="8,14,10,0">
+                                <Rectangle x:Name="AiGpuBar" Width="0" HorizontalAlignment="Left" Fill="#3B5A72"/>
+                            </Border>
+                            <TextBlock x:Name="AiGpuLabel" Grid.Row="2" Grid.Column="2" Margin="0,8,0,0" Text="—"/>
+                        </Grid>
+                    </StackPanel>
+                </Button>
+                <Button Style="{StaticResource TileButton}" Margin="5,0,5,0" Click="OnUpdateClick">
+                    <StackPanel>
+                        <TextBlock FontFamily="Bahnschrift" FontSize="13" Foreground="#8C6239" Text="11  Version"/>
+                        <TextBlock FontFamily="Bahnschrift" FontSize="28" Margin="0,8,0,6" Text="Update"/>
+                        <TextBlock FontSize="15" TextWrapping="Wrap" Foreground="#4A5C54"
+                                   Text="Prüft online auf eine neuere KlarWin-Version und installiert sie bei Bedarf."/>
+                    </StackPanel>
+                </Button>
             </UniformGrid>
         </ScrollViewer>
 
@@ -152,6 +217,9 @@
                                    Text="Jede Kachel erledigt eine Sache. Fortschritt und Listen erscheinen hier."/>
                     </StackPanel>
                     <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Top">
+                        <ComboBox x:Name="FilterBox" Width="160" Margin="0,0,10,0" Visibility="Collapsed"
+                                  VerticalContentAlignment="Center" FontFamily="Bahnschrift" FontSize="14"
+                                  SelectionChanged="OnFilterChanged"/>
                         <ComboBox x:Name="WipeModeBox" Width="160" Margin="0,0,10,0" Visibility="Collapsed"
                                   VerticalContentAlignment="Center" FontFamily="Bahnschrift" FontSize="14">
                             <ComboBoxItem Content="Nullen (1×)" IsSelected="True" Tag="ZeroFill"/>

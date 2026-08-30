@@ -17,8 +17,18 @@ public partial class MainWindow : Window
     private readonly SecureWipeService _wipe = new();
     private readonly RecoveryService _recovery = new();
     private readonly LicenseKeyService _keys = new();
+    private readonly NetworkMonitorService _network = new();
+    private readonly AiLoadService _ai = new();
+    private readonly UpdateService _update = new();
+    private UpdateInfo? _pendingUpdate;
     private readonly DispatcherTimer _timer;
     private string _mode = "";
+    private string _aiFilter = "all";
+    private bool _filterUpdating;
+    private int _liveBusy;
+    private DateTime _lastRouterUtc = DateTime.MinValue;
+    private DateTime _lastHostsUtc = DateTime.MinValue;
+    private DateTime _lastPingUtc = DateTime.MinValue;
     private CancellationTokenSource? _wipeCts;
     private IReadOnlyList<AutostartEntry> _autostartItems = [];
     private IReadOnlyList<RecoverableItem> _recoverItems = [];
@@ -28,29 +38,96 @@ public partial class MainWindow : Window
     {
         InitializeComponent();
         _timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
-        _timer.Tick += (_, _) => RefreshPerformance();
+        _timer.Tick += (_, _) => _ = RefreshLiveAsync();
         Loaded += (_, _) =>
         {
-            RefreshPerformance();
+            VersionLabel.Text = $"Version {UpdateService.CurrentVersion}";
+            _ = RefreshLiveAsync();
             _timer.Start();
+            _ = QuietUpdateCheckAsync();
         };
         Closed += (_, _) =>
         {
             _timer.Stop();
             _wipeCts?.Cancel();
+            _network.Dispose();
             _performance.Dispose();
         };
     }
 
-    private void RefreshPerformance()
+    private async Task RefreshLiveAsync()
     {
-        var snap = _performance.Capture();
-        CpuBar.Width = BarWidth(snap.CpuPercent);
-        RamBar.Width = BarWidth(snap.RamPercent);
-        DiskBar.Width = BarWidth(100 - snap.DiskFreePercent);
-        CpuLabel.Text = $"{snap.CpuPercent:0}%";
-        RamLabel.Text = $"{snap.RamPercent:0}%";
-        DiskLabel.Text = $"{snap.DiskFreePercent:0}% frei";
+        var perf = _performance.Capture();
+        CpuBar.Width = BarWidth(perf.CpuPercent);
+        RamBar.Width = BarWidth(perf.RamPercent);
+        DiskBar.Width = BarWidth(100 - perf.DiskFreePercent);
+        CpuLabel.Text = $"{perf.CpuPercent:0}%";
+        RamLabel.Text = $"{perf.RamPercent:0}%";
+        DiskLabel.Text = $"{perf.DiskFreePercent:0}% frei";
+
+        var net = _network.ReadLocal();
+        ApplyNetworkBars(net);
+        var ai = _ai.Capture(_aiFilter, perf.CpuPercent, perf.RamTotalBytes);
+        ApplyAiBars(ai);
+
+        if (_mode == "network")
+        {
+            ShowNetworkPanel(net, refreshList: false);
+        }
+        else if (_mode == "ai")
+        {
+            ShowAiPanel(ai, refreshApps: false);
+        }
+
+        if (Interlocked.Exchange(ref _liveBusy, 1) == 1) return;
+        try
+        {
+            if ((DateTime.UtcNow - _lastPingUtc).TotalSeconds >= 2)
+            {
+                _lastPingUtc = DateTime.UtcNow;
+                await _network.PingGatewayAsync();
+            }
+
+            var wantHosts = _mode == "network" && (DateTime.UtcNow - _lastHostsUtc).TotalSeconds >= 20;
+            if ((DateTime.UtcNow - _lastRouterUtc).TotalSeconds >= 2)
+            {
+                _lastRouterUtc = DateTime.UtcNow;
+                if (wantHosts) _lastHostsUtc = DateTime.UtcNow;
+                var router = await _network.RefreshRouterAsync(wantHosts);
+                ApplyNetworkBars(router);
+                if (_mode == "network")
+                {
+                    ShowNetworkPanel(router, refreshList: wantHosts);
+                }
+            }
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _liveBusy, 0);
+        }
+    }
+
+    private void ApplyNetworkBars(NetworkSnapshot net)
+    {
+        var down = net.RouterReachable ? net.WanDownBytesPerSec : net.AdapterDownBytesPerSec;
+        var up = net.RouterReachable ? net.WanUpBytesPerSec : net.AdapterUpBytesPerSec;
+        var downMaxBytes = net.WanDownBitsMax > 0 ? net.WanDownBitsMax / 8.0 : Math.Max(net.AdapterSpeedBits / 8.0, 1);
+        var upMaxBytes = net.WanUpBitsMax > 0 ? net.WanUpBitsMax / 8.0 : Math.Max(net.AdapterSpeedBits / 8.0, 1);
+        NetDownBar.Width = BarWidth(100.0 * down / downMaxBytes);
+        NetUpBar.Width = BarWidth(100.0 * up / upMaxBytes);
+        NetDownLabel.Text = NetworkMonitorService.FormatRate(down);
+        NetUpLabel.Text = NetworkMonitorService.FormatRate(up);
+        NetPingLabel.Text = net.PingMs is int ms ? $"{ms} ms · {net.Gateway}" : (string.IsNullOrWhiteSpace(net.Gateway) ? "kein Gateway" : net.Gateway);
+    }
+
+    private void ApplyAiBars(AiLoadSnapshot ai)
+    {
+        AiCpuBar.Width = BarWidth(ai.CpuPercent);
+        AiRamBar.Width = BarWidth(ai.RamPercent);
+        AiGpuBar.Width = BarWidth(ai.GpuPercent);
+        AiCpuLabel.Text = $"{ai.CpuPercent:0}%";
+        AiRamLabel.Text = $"{ai.RamPercent:0}%";
+        AiGpuLabel.Text = ai.GpuAvailable ? $"{ai.GpuPercent:0}%" : "—";
     }
 
     private static double BarWidth(double percent) => Math.Max(0, Math.Min(180, 180 * percent / 100));
@@ -58,6 +135,7 @@ public partial class MainWindow : Window
     private void ResetPanelChrome()
     {
         WipeModeBox.Visibility = Visibility.Collapsed;
+        FilterBox.Visibility = Visibility.Collapsed;
         DetailList.Visibility = Visibility.Collapsed;
         DetailList.Items.Clear();
         SecondaryAction.Visibility = Visibility.Collapsed;
@@ -170,6 +248,52 @@ public partial class MainWindow : Window
         RefreshKeyList();
     }
 
+    private void OnNetworkClick(object sender, RoutedEventArgs e)
+    {
+        _mode = "network";
+        ResetPanelChrome();
+        PanelTitle.Text = "Netzwerk";
+        PrimaryAction.Content = "Aktualisieren";
+        SecondaryAction.Content = "Router öffnen";
+        SecondaryAction.Visibility = Visibility.Visible;
+        DetailList.Visibility = Visibility.Visible;
+        ShowNetworkPanel(_network.Last, refreshList: true);
+        _ = ForceNetworkRefreshAsync();
+    }
+
+    private void OnAiClick(object sender, RoutedEventArgs e)
+    {
+        _mode = "ai";
+        ResetPanelChrome();
+        FilterBox.Visibility = Visibility.Visible;
+        PanelTitle.Text = "KI-Last";
+        PrimaryAction.Visibility = Visibility.Collapsed;
+        var perf = _performance.Capture();
+        var ai = _ai.Capture(_aiFilter, perf.CpuPercent, perf.RamTotalBytes);
+        ShowAiPanel(ai, refreshApps: true);
+    }
+
+    private void OnUpdateClick(object sender, RoutedEventArgs e)
+    {
+        _mode = "update";
+        ResetPanelChrome();
+        PanelTitle.Text = "Update";
+        PrimaryAction.Content = "Jetzt aktualisieren";
+        SecondaryAction.Content = "Erneut prüfen";
+        SecondaryAction.Visibility = Visibility.Visible;
+        PanelBody.Text = $"Installierte Version: {UpdateService.CurrentVersion}. Prüfe Server …";
+        PrimaryAction.Visibility = Visibility.Collapsed;
+        _ = CheckUpdateAsync(applyPrompt: false);
+    }
+
+    private void OnFilterChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_filterUpdating || _mode != "ai") return;
+        _aiFilter = FilterBox.SelectedItem is ComboBoxItem item && item.Tag is string tag ? tag : "all";
+        var perf = _performance.Capture();
+        ShowAiPanel(_ai.Capture(_aiFilter, perf.CpuPercent, perf.RamTotalBytes), refreshApps: false);
+    }
+
     private async void OnPrimaryAction(object sender, RoutedEventArgs e)
     {
         switch (_mode)
@@ -194,6 +318,12 @@ public partial class MainWindow : Window
                 break;
             case "keys":
                 ExportKeys();
+                break;
+            case "network":
+                await ForceNetworkRefreshAsync();
+                break;
+            case "update":
+                await ApplyUpdateAsync();
                 break;
         }
     }
@@ -220,6 +350,12 @@ public partial class MainWindow : Window
                 break;
             case "keys":
                 RefreshKeyList();
+                break;
+            case "network":
+                _network.OpenRouterPage();
+                break;
+            case "update":
+                _ = CheckUpdateAsync(applyPrompt: false);
                 break;
         }
     }
@@ -439,5 +575,169 @@ public partial class MainWindow : Window
         if (key.Length <= 8) return key;
         var visible = Math.Min(5, key.Length / 4);
         return key[..visible] + new string('•', Math.Min(12, key.Length - visible - 4)) + key[^4..];
+    }
+
+    private async Task ForceNetworkRefreshAsync()
+    {
+        PanelBody.Text = "Router wird abgefragt …";
+        await _network.PingGatewayAsync();
+        var snap = await _network.RefreshRouterAsync(includeHosts: true);
+        _lastRouterUtc = DateTime.UtcNow;
+        _lastHostsUtc = DateTime.UtcNow;
+        ApplyNetworkBars(snap);
+        ShowNetworkPanel(snap, refreshList: true);
+    }
+
+    private void ShowNetworkPanel(NetworkSnapshot net, bool refreshList)
+    {
+        var down = net.RouterReachable ? net.WanDownBytesPerSec : net.AdapterDownBytesPerSec;
+        var up = net.RouterReachable ? net.WanUpBytesPerSec : net.AdapterUpBytesPerSec;
+        var parts = new List<string>
+        {
+            $"{net.AdapterName}: ↓ {NetworkMonitorService.FormatRate(net.AdapterDownBytesPerSec)} ↑ {NetworkMonitorService.FormatRate(net.AdapterUpBytesPerSec)}"
+        };
+
+        if (net.RouterReachable)
+        {
+            var uptime = net.WanUptime.TotalHours >= 1
+                ? $"{net.WanUptime.TotalHours:0} h"
+                : $"{net.WanUptime.Minutes} min";
+            parts.Add($"{net.RouterName} · {net.WanType} {net.WanStatus} · Leitung ↓ {NetworkMonitorService.FormatBits(net.WanDownBitsMax)} ↑ {NetworkMonitorService.FormatBits(net.WanUpBitsMax)}");
+            parts.Add($"WAN jetzt ↓ {NetworkMonitorService.FormatRate(down)} ↑ {NetworkMonitorService.FormatRate(up)} · Volumen seit Verbindung {CleanupService.FormatBytes(net.WanBytesReceived)} ↓ / {CleanupService.FormatBytes(net.WanBytesSent)} ↑ · online {uptime}");
+            if (!string.IsNullOrWhiteSpace(net.ExternalIp))
+            {
+                parts.Add($"öffentliche IP {net.ExternalIp}");
+            }
+
+            parts.Add($"{net.ActiveHostCount} Geräte aktiv, {net.HostCount} bekannt");
+        }
+
+        if (!string.IsNullOrWhiteSpace(net.Note))
+        {
+            parts.Add(net.Note);
+        }
+
+        PanelBody.Text = string.Join("  ·  ", parts);
+
+        if (!refreshList) return;
+        DetailList.Items.Clear();
+        foreach (var host in net.Hosts.Where(h => h.Active).Take(40))
+        {
+            DetailList.Items.Add($"{host.Name}  ·  {host.Ip}  ·  {host.InterfaceType}");
+        }
+
+        foreach (var host in net.Hosts.Where(h => !h.Active).Take(8))
+        {
+            DetailList.Items.Add($"{host.Name} (offline)  ·  {host.Ip}");
+        }
+    }
+
+    private void ShowAiPanel(AiLoadSnapshot ai, bool refreshApps)
+    {
+        if (refreshApps)
+        {
+            _filterUpdating = true;
+            var selected = _aiFilter;
+            FilterBox.Items.Clear();
+            FilterBox.Items.Add(new ComboBoxItem { Content = "Alle KI", Tag = "all", IsSelected = selected is "all" or "" });
+            foreach (var app in ai.AvailableApps)
+            {
+                FilterBox.Items.Add(new ComboBoxItem
+                {
+                    Content = app.Label,
+                    Tag = app.Id,
+                    IsSelected = app.Id.Equals(selected, StringComparison.OrdinalIgnoreCase)
+                });
+            }
+
+            if (FilterBox.SelectedIndex < 0) FilterBox.SelectedIndex = 0;
+            _filterUpdating = false;
+        }
+
+        var gpu = ai.GpuAvailable
+            ? $"{ai.GpuName}: {ai.GpuPercent:0}% · VRAM {CleanupService.FormatBytes(ai.GpuMemoryUsedBytes)} von {CleanupService.FormatBytes(ai.GpuMemoryTotalBytes)}"
+            : "Keine NVIDIA-GPU erkannt";
+        var onGpu = ai.SelectedOnGpu ? "läuft auf der GPU" : "aktuell nicht auf der GPU";
+        PanelBody.Text = $"{ai.FilterLabel}: {ai.CpuPercent:0}% der CPU (System {ai.SystemCpuPercent:0}%) · {CleanupService.FormatBytes(ai.RamBytes)} RAM ({ai.RamPercent:0}%) · {onGpu}. {gpu}";
+
+        var selectedIndex = DetailList.SelectedIndex;
+        DetailList.Visibility = Visibility.Visible;
+        DetailList.Items.Clear();
+        if (ai.Rows.Count == 0)
+        {
+            DetailList.Items.Add("Keine passenden KI-Prozesse gefunden (Cursor, Ollama, Llama, LM Studio, ChatGPT …).");
+            return;
+        }
+
+        foreach (var row in ai.Rows)
+        {
+            var gpuMark = row.OnGpu ? " · GPU" : "";
+            var count = row.Count > 1 ? $" ({row.Count})" : "";
+            DetailList.Items.Add($"{row.Name}{count}  ·  {row.CpuPercent:0.0}% CPU  ·  {CleanupService.FormatBytes(row.RamBytes)}{gpuMark}");
+        }
+
+        if (selectedIndex >= 0 && selectedIndex < DetailList.Items.Count)
+        {
+            DetailList.SelectedIndex = selectedIndex;
+        }
+    }
+
+    private async Task QuietUpdateCheckAsync()
+    {
+        var info = await _update.CheckAsync();
+        if (!info.UpdateAvailable) return;
+        VersionLabel.Text = $"Version {info.CurrentVersion} · Update {info.LatestVersion} verfügbar";
+    }
+
+    private async Task CheckUpdateAsync(bool applyPrompt)
+    {
+        PanelBody.Text = "Update-Server wird gefragt …";
+        var info = await _update.CheckAsync();
+        _pendingUpdate = info;
+        VersionLabel.Text = info.UpdateAvailable
+            ? $"Version {info.CurrentVersion} · Update {info.LatestVersion} verfügbar"
+            : $"Version {info.CurrentVersion}";
+        PanelBody.Text = string.IsNullOrWhiteSpace(info.Notes)
+            ? info.Message
+            : $"{info.Message} {info.Notes}";
+        PrimaryAction.Visibility = info.UpdateAvailable ? Visibility.Visible : Visibility.Collapsed;
+        PrimaryAction.Content = "Jetzt aktualisieren";
+
+        if (applyPrompt && info.UpdateAvailable)
+        {
+            var answer = MessageBox.Show(
+                this,
+                $"{info.Message}\n\nJetzt herunterladen und neu starten?",
+                "KlarWin Update",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Question);
+            if (answer == MessageBoxResult.Yes)
+            {
+                await ApplyUpdateAsync();
+            }
+        }
+    }
+
+    private async Task ApplyUpdateAsync()
+    {
+        _pendingUpdate ??= await _update.CheckAsync();
+        if (_pendingUpdate is null || !_pendingUpdate.UpdateAvailable)
+        {
+            await CheckUpdateAsync(applyPrompt: false);
+            return;
+        }
+
+        PrimaryAction.IsEnabled = false;
+        var progress = new Progress<string>(text => PanelBody.Text = text);
+        var message = await _update.DownloadAndPrepareRestartAsync(_pendingUpdate, progress);
+        PanelBody.Text = message;
+        if (message.Contains("startet", StringComparison.OrdinalIgnoreCase))
+        {
+            Application.Current.Shutdown();
+        }
+        else
+        {
+            PrimaryAction.IsEnabled = true;
+        }
     }
 }

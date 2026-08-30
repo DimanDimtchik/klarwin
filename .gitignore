@@ -1,6 +1,7 @@
 bin/
 obj/
 .vs/
+dist/
 *.user
 *.suo
 *.userosscache
@@ -10,4 +11,5 @@ BundleArtifacts/
 TestResults/
 *.nupkg
 *.pfx
+*.zip
 .DS_Store

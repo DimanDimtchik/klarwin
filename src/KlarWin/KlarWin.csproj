@@ -9,8 +9,12 @@
     <RootNamespace>KlarWin</RootNamespace>
     <AssemblyName>KlarWin</AssemblyName>
     <Product>KlarWin</Product>
-    <Company>IQ-Strom GmbH</Company>
-    <Description>Windows aufräumen, beschleunigen und im Blick behalten.</Description>
+    <Company>GanzSoft</Company>
+    <Description>Windows aufräumen, beschleunigen, Netzwerk und KI-Last im Blick.</Description>
+    <Version>1.1.0</Version>
+    <AssemblyVersion>1.1.0.0</AssemblyVersion>
+    <FileVersion>1.1.0.0</FileVersion>
+    <InformationalVersion>1.1.0</InformationalVersion>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="System.Management" Version="9.0.0" />

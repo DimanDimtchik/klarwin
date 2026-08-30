@@ -1,0 +1,64 @@
+name: Deploy KlarWin
+
+on:
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "9.0.x"
+
+      - name: Publish
+        run: |
+          dotnet publish src/KlarWin/KlarWin.csproj -c Release -r win-x64 --self-contained true \
+            -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true \
+            -p:EnableCompressionInSingleFile=true \
+            -o dist/KlarWin
+          cp deploy/dg.ganz-soft.de/klarwin/Installieren.bat dist/KlarWin/Installieren.bat
+
+      - name: Package
+        run: |
+          mkdir -p out
+          cp deploy/dg.ganz-soft.de/klarwin/version.json out/
+          cp deploy/dg.ganz-soft.de/klarwin/index.html out/
+          cp docs/KlarWin-Handbuch.pdf out/
+          cp docs/KlarWin-Handbuch.html out/
+          (cd dist/KlarWin && zip -9 ../../out/KlarWin-Setup.zip KlarWin.exe Installieren.bat)
+          ls -lah out
+
+      - name: Setup SSH
+        env:
+          KEY: ${{ secrets.DG_ALLINKL_SSH_PRIVATE_KEY }}
+          SSH_USER: ${{ secrets.DG_ALLINKL_SSH_USER }}
+          SSH_HOST: ${{ secrets.DG_ALLINKL_SSH_HOST }}
+        run: |
+          test -n "$KEY"
+          test -n "$SSH_USER"
+          test -n "$SSH_HOST"
+          mkdir -p ~/.ssh
+          printf '%s\n' "$KEY" | tr -d '\r' > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          cat > ~/.ssh/config <<EOF
+          Host allinkl
+            HostName ${SSH_HOST}
+            User ${SSH_USER}
+            IdentityFile ~/.ssh/id_ed25519
+            IdentitiesOnly yes
+            StrictHostKeyChecking accept-new
+          EOF
+          chmod 600 ~/.ssh/config
+          ssh -o BatchMode=yes -o ConnectTimeout=25 allinkl 'echo SSH_OK; hostname; pwd'
+
+      - name: Upload
+        run: |
+          REMOTE=www/htdocs/w0217246
+          ssh allinkl "mkdir -p $REMOTE/dg.ganz-soft.de/klarwin $REMOTE/ganz-soft.de/klarwin"
+          scp out/KlarWin-Setup.zip out/version.json out/index.html out/KlarWin-Handbuch.pdf out/KlarWin-Handbuch.html \
+            allinkl:$REMOTE/dg.ganz-soft.de/klarwin/
+          scp out/version.json allinkl:$REMOTE/ganz-soft.de/klarwin/version.json
+          echo "OK https://dg.ganz-soft.de/klarwin/"
