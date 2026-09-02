@@ -72,8 +72,8 @@ public sealed class SecureWipeService
                 Success = true,
                 BytesWritten = writtenTotal,
                 Message = mode == WipeMode.ZeroFill
-                    ? $"Freier Speicher mit Nullen überschrieben ({CleanupService.FormatBytes(writtenTotal)})."
-                    : $"Freier Speicher in {passes} Durchläufen überschrieben ({CleanupService.FormatBytes(writtenTotal)})."
+                    ? $"Freier Speicher mit Nullen überschrieben ({ByteSizeFormatter.Format(writtenTotal)})."
+                    : $"Freier Speicher in {passes} Durchläufen überschrieben ({ByteSizeFormatter.Format(writtenTotal)})."
             };
         }
         catch (OperationCanceledException)
@@ -82,7 +82,7 @@ public sealed class SecureWipeService
         }
         catch (Exception ex)
         {
-            return new WipeResult { Success = false, Message = ex.Message, BytesWritten = writtenTotal };
+            return new WipeResult { Success = false, Message = UserFriendlyErrors.Translate(ex), BytesWritten = writtenTotal };
         }
         finally
         {
@@ -133,7 +133,7 @@ public sealed class SecureWipeService
                 index++;
                 if (index % 8 == 0)
                 {
-                    progress?.Report($"Durchlauf {pass}: {CleanupService.FormatBytes(written)} geschrieben …");
+                    progress?.Report($"Durchlauf {pass}: {ByteSizeFormatter.Format(written)} geschrieben …");
                 }
             }
             catch (IOException)
@@ -165,5 +165,74 @@ public sealed class SecureWipeService
         }
 
         RandomNumberGenerator.Fill(buffer);
+    }
+
+    /// <summary>Overwrite and delete a single file or folder tree.</summary>
+    public WipeResult SecureDeletePath(string targetPath, WipeMode mode, IProgress<string>? progress = null, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(targetPath) || (!File.Exists(targetPath) && !Directory.Exists(targetPath)))
+        {
+            return new WipeResult { Success = false, Message = "Datei oder Ordner nicht gefunden." };
+        }
+
+        var passes = (int)mode;
+        long written = 0;
+        try
+        {
+            if (File.Exists(targetPath))
+            {
+                written += OverwriteFile(targetPath, passes, mode, progress, cancellationToken);
+                File.SetAttributes(targetPath, FileAttributes.Normal);
+                File.Delete(targetPath);
+                return new WipeResult { Success = true, BytesWritten = written, Message = $"„{Path.GetFileName(targetPath)}“ sicher gelöscht." };
+            }
+
+            foreach (var file in Directory.EnumerateFiles(targetPath, "*", SearchOption.AllDirectories))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                written += OverwriteFile(file, passes, mode, progress, cancellationToken);
+                File.SetAttributes(file, FileAttributes.Normal);
+                File.Delete(file);
+            }
+
+            Directory.Delete(targetPath, true);
+            return new WipeResult { Success = true, BytesWritten = written, Message = $"Ordner „{Path.GetFileName(targetPath.TrimEnd('\\'))}“ sicher gelöscht." };
+        }
+        catch (OperationCanceledException)
+        {
+            return new WipeResult { Success = false, Message = "Abgebrochen.", BytesWritten = written };
+        }
+        catch (Exception ex)
+        {
+            return new WipeResult { Success = false, Message = UserFriendlyErrors.Translate(ex), BytesWritten = written };
+        }
+    }
+
+    private static long OverwriteFile(string path, int passes, WipeMode mode, IProgress<string>? progress, CancellationToken cancellationToken)
+    {
+        long written = 0;
+        var length = new FileInfo(path).Length;
+        if (length <= 0) return 0;
+        using var stream = new FileStream(path, FileMode.Open, FileAccess.Write, FileShare.None);
+        var buffer = new byte[Math.Min(1024 * 1024, Math.Max(length, 4096))];
+        for (var pass = 1; pass <= passes; pass++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            progress?.Report($"Überschreibe {Path.GetFileName(path)} — Durchlauf {pass}/{passes}");
+            stream.Seek(0, SeekOrigin.Begin);
+            var remaining = length;
+            FillBuffer(buffer, pass, mode);
+            while (remaining > 0)
+            {
+                var chunk = (int)Math.Min(buffer.Length, remaining);
+                stream.Write(buffer, 0, chunk);
+                written += chunk;
+                remaining -= chunk;
+            }
+
+            stream.Flush(true);
+        }
+
+        return written;
     }
 }

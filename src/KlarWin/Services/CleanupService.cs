@@ -13,17 +13,44 @@ public sealed class CleanupResult
 
 public sealed partial class CleanupService
 {
-    public CleanupResult CleanNow(IProgress<string>? progress = null)
+    public CleanupResult CleanNow(CleanupSelection selection, IProgress<string>? progress = null)
     {
         long bytes = 0;
         var files = 0;
         var notes = new List<string>();
 
-        bytes += CleanDirectory(Path.GetTempPath(), ref files, progress, notes, "Benutzer-Temp");
-        var windowsTemp = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "Temp");
-        bytes += CleanDirectory(windowsTemp, ref files, progress, notes, "Windows-Temp");
-        bytes += CleanDeliveryOptimization(ref files, progress, notes);
-        EmptyRecycleBin(progress, notes);
+        if (selection.UserTemp)
+        {
+            bytes += SafeFileSystem.CleanDirectorySafe(Path.GetTempPath(), ref files, progress, notes, "Benutzer-Temp");
+        }
+
+        if (selection.WindowsTemp)
+        {
+            var windowsTemp = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "Temp");
+            bytes += SafeFileSystem.CleanDirectorySafe(windowsTemp, ref files, progress, notes, "Windows-Temp");
+        }
+
+        if (selection.DeliveryCache)
+        {
+            var path = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "SoftwareDistribution", "DeliveryOptimization", "Cache");
+            bytes += SafeFileSystem.CleanDirectorySafe(path, ref files, progress, notes, "Download-Cache");
+        }
+
+        if (selection.RecycleBin)
+        {
+            EmptyRecycleBin(progress, notes);
+        }
+
+        if (selection.UserDownloads)
+        {
+            var downloads = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads");
+            bytes += SafeFileSystem.CleanDirectorySafe(downloads, ref files, progress, notes, "Download-Ordner");
+        }
+
+        if (!selection.UserTemp && !selection.WindowsTemp && !selection.DeliveryCache && !selection.RecycleBin && !selection.UserDownloads)
+        {
+            notes.Add("Nichts ausgewählt.");
+        }
 
         return new CleanupResult
         {
@@ -31,102 +58,6 @@ public sealed partial class CleanupService
             FilesRemoved = files,
             Notes = notes
         };
-    }
-
-    private static long CleanDirectory(string path, ref int files, IProgress<string>? progress, List<string> notes, string label)
-    {
-        if (!Directory.Exists(path))
-        {
-            notes.Add($"{label}: Ordner nicht gefunden.");
-            return 0;
-        }
-
-        long bytes = 0;
-        var removed = 0;
-        var skipped = 0;
-
-        foreach (var file in Directory.EnumerateFiles(path, "*", SearchOption.TopDirectoryOnly))
-        {
-            try
-            {
-                var info = new FileInfo(file);
-                var size = info.Exists ? info.Length : 0;
-                File.SetAttributes(file, FileAttributes.Normal);
-                File.Delete(file);
-                bytes += size;
-                removed++;
-                files++;
-            }
-            catch
-            {
-                skipped++;
-            }
-        }
-
-        foreach (var directory in Directory.EnumerateDirectories(path))
-        {
-            try
-            {
-                bytes += DeleteTree(directory, ref files, ref skipped);
-                removed++;
-            }
-            catch
-            {
-                skipped++;
-            }
-        }
-
-        progress?.Report($"{label}: {removed} Einträge gelöscht.");
-        if (skipped > 0)
-        {
-            notes.Add($"{label}: {skipped} Dateien waren in Benutzung und wurden übersprungen.");
-        }
-
-        return bytes;
-    }
-
-    private static long DeleteTree(string path, ref int files, ref int skipped)
-    {
-        long bytes = 0;
-        foreach (var file in Directory.EnumerateFiles(path, "*", SearchOption.AllDirectories))
-        {
-            try
-            {
-                var info = new FileInfo(file);
-                var size = info.Exists ? info.Length : 0;
-                File.SetAttributes(file, FileAttributes.Normal);
-                File.Delete(file);
-                bytes += size;
-                files++;
-            }
-            catch
-            {
-                skipped++;
-            }
-        }
-
-        try
-        {
-            Directory.Delete(path, true);
-        }
-        catch
-        {
-            skipped++;
-        }
-
-        return bytes;
-    }
-
-    private static long CleanDeliveryOptimization(ref int files, IProgress<string>? progress, List<string> notes)
-    {
-        var path = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "SoftwareDistribution", "DeliveryOptimization", "Cache");
-        if (!Directory.Exists(path))
-        {
-            return 0;
-        }
-
-        var bytes = CleanDirectory(path, ref files, progress, notes, "Download-Cache");
-        return bytes;
     }
 
     private static void EmptyRecycleBin(IProgress<string>? progress, List<string> notes)
@@ -143,21 +74,6 @@ public sealed partial class CleanupService
         }
 
         notes.Add("Papierkorb konnte nicht vollständig geleert werden.");
-    }
-
-    public static string FormatBytes(long bytes)
-    {
-        if (bytes < 1024) return $"{bytes} B";
-        double value = bytes;
-        string[] units = ["KB", "MB", "GB", "TB"];
-        var unit = 0;
-        while (value >= 1024 && unit < units.Length - 1)
-        {
-            value /= 1024;
-            unit++;
-        }
-
-        return $"{value:0.0} {units[unit]}";
     }
 
     [DllImport("Shell32.dll", CharSet = CharSet.Unicode)]

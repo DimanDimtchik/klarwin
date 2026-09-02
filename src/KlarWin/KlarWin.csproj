@@ -11,12 +11,28 @@
     <Product>KlarWin</Product>
     <Company>GanzSoft</Company>
     <Description>Windows aufräumen, beschleunigen, Netzwerk und KI-Last im Blick.</Description>
-    <Version>1.1.0</Version>
-    <AssemblyVersion>1.1.0.0</AssemblyVersion>
-    <FileVersion>1.1.0.0</FileVersion>
-    <InformationalVersion>1.1.0</InformationalVersion>
+    <Version>1.3.42</Version>
+    <AssemblyVersion>1.3.42.0</AssemblyVersion>
+    <FileVersion>1.3.42.0</FileVersion>
+    <InformationalVersion>1.3.42</InformationalVersion>
+    <ApplicationIcon>Assets\klarwin.ico</ApplicationIcon>
   </PropertyGroup>
   <ItemGroup>
-    <PackageReference Include="System.Management" Version="9.0.0" />
+    <Content Include="Tools\Fido.ps1">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="Tools\Fido-LICENSE.txt">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="Assets\blank-overlay.ico">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <PackageReference Include="LibreHardwareMonitorLib" Version="0.9.6" />
+    <PackageReference Include="System.Diagnostics.EventLog" Version="10.0.2" />
+    <Resource Include="Assets\klarwin.ico" />
+    <Resource Include="Assets\klarwin-icon.png" />
+    <Resource Include="Assets\ganzsoft-icon.png" />
+    <Resource Include="Assets\ganzsoft-wordmark.png" />
+    <PackageReference Include="System.Management" Version="10.0.2" />
   </ItemGroup>
 </Project>

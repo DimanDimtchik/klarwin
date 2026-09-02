@@ -1,0 +1,8 @@
+Fido — ISO Downloader (v1.70)
+Copyright © 2019–2026 Pete Batard <pete@akeo.ie>
+
+Bundled with KlarWin under Tools/Fido.ps1 for resolving official Microsoft Windows ISO download URLs.
+License: GNU General Public License v3 or later (GPL-3.0).
+Source: https://github.com/pbatard/Fido
+
+KlarWin invokes this script unmodified. GPL-3.0 applies to Fido.ps1; obtain the complete corresponding source at the URL above.

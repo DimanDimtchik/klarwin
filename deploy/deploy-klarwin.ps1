@@ -16,8 +16,17 @@ $KlarWinLocal = Join-Path $Root "deploy\dg.ganz-soft.de\klarwin"
 Write-Host "1) Ordner dg.ganz-soft.de/klarwin anlegen ..."
 ssh allinkl-ganzom "mkdir -p $KlarWinRemote && mkdir -p $RemoteBase/ganz-soft.de/klarwin && mkdir -p $RemoteBase/ganz-soft.de/bin"
 
-Write-Host "2) Installer + PDF hochladen ..."
+Write-Host "2) Installer nach dg.ganz-soft.de/klarwin ..."
 scp -r "$KlarWinLocal\*" "allinkl-ganzom:$KlarWinRemote/"
+
+Write-Host "2b) ZIP + version.json + Handbuch nach ganz-soft.de/klarwin (Update-URL) ..."
+$GanzSoftRemote = "$RemoteBase/ganz-soft.de/klarwin"
+$HandbuchPdf = Join-Path $Root "docs\KlarWin-Handbuch.pdf"
+$HandbuchHtml = Join-Path $Root "docs\KlarWin-Handbuch.html"
+scp "$KlarWinLocal\KlarWin-Setup.zip" "$KlarWinLocal\version.json" "allinkl-ganzom:${GanzSoftRemote}/"
+if (Test-Path $HandbuchPdf) { scp $HandbuchPdf "allinkl-ganzom:${GanzSoftRemote}/KlarWin-Handbuch.pdf" }
+if (Test-Path $HandbuchHtml) { scp $HandbuchHtml "allinkl-ganzom:${GanzSoftRemote}/KlarWin-Handbuch.html" }
+Write-Host "   Hinweis: deploy/dg.../index.html NICHT nach ganz-soft.de kopieren — Marketing-Seite kommt aus ganz-soft-landing (Schritt 3)."
 
 Write-Host "3) Marketing-Dateien KlarWin (static) ..."
 scp -r "$LandingLocal\klarwin\*" "allinkl-ganzom:$RemoteBase/ganz-soft.de/klarwin/"

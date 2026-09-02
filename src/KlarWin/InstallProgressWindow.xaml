@@ -1,0 +1,30 @@
+<Window x:Class="KlarWin.InstallProgressWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="KlarWin — Installation läuft"
+        Width="560" SizeToContent="Height"
+        MinHeight="220" ResizeMode="NoResize"
+        WindowStartupLocation="CenterOwner"
+        ShowInTaskbar="False"
+        Topmost="True"
+        FontFamily="Sitka Text"
+        Background="#F4F8F5">
+    <Border Margin="0" Padding="28,26" BorderBrush="#2F6A4A" BorderThickness="2" Background="#FBFDFA">
+        <StackPanel>
+            <TextBlock FontFamily="Bahnschrift" FontSize="24" FontWeight="SemiBold" Foreground="#18241F"
+                       Text="Updates werden installiert"/>
+            <TextBlock x:Name="CounterText" Margin="0,10,0,0" FontFamily="Bahnschrift" FontSize="16"
+                       Foreground="#2F6A4A"/>
+            <ProgressBar x:Name="MainBar" Height="28" Margin="0,18,0,0" Minimum="0" Maximum="100"
+                         Foreground="#2F6A4A" Background="#D5E0D8"/>
+            <TextBlock x:Name="HeadlineText" Margin="0,18,0,0" FontSize="17" FontWeight="SemiBold"
+                       TextWrapping="Wrap" Foreground="#18241F"/>
+            <TextBlock x:Name="DetailText" Margin="0,8,0,0" FontSize="14" TextWrapping="Wrap"
+                       Foreground="#4A5C54" MaxHeight="120"/>
+            <Border Margin="0,18,0,0" Padding="12,10" Background="#EEF3EF" CornerRadius="6">
+                <TextBlock FontSize="13" Foreground="#8C6239" TextWrapping="Wrap"
+                           Text="Bitte warten — dieses Fenster offen lassen. Installation kann mehrere Minuten pro Programm dauern."/>
+            </Border>
+        </StackPanel>
+    </Border>
+</Window>

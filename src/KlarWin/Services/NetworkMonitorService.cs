@@ -39,6 +39,7 @@ public sealed class RouterHost
     public string Name { get; init; } = "";
     public string Ip { get; init; } = "";
     public string Mac { get; init; } = "";
+    public string Vendor { get; init; } = "";
     public string InterfaceType { get; init; } = "";
     public bool Active { get; init; }
 }
@@ -389,6 +390,7 @@ public sealed class NetworkMonitorService : IDisposable
                 Name = ExtractXml(xml, "NewHostName") ?? "—",
                 Ip = ExtractXml(xml, "NewIPAddress") ?? "",
                 Mac = ExtractXml(xml, "NewMACAddress") ?? "",
+                Vendor = MacVendorLookup.ResolveLocal(ExtractXml(xml, "NewMACAddress")).Vendor,
                 InterfaceType = ExtractXml(xml, "NewInterfaceType") switch
                 {
                     "802.11" => "WLAN",
@@ -401,6 +403,7 @@ public sealed class NetworkMonitorService : IDisposable
 
         return bag
             .Where(h => h is not null && (!string.IsNullOrWhiteSpace(h.Ip) || h.Name is not "—"))
+            .Select(h => h!)
             .OrderByDescending(h => h.Active)
             .ThenBy(h => h.Name, StringComparer.CurrentCultureIgnoreCase)
             .ToList();

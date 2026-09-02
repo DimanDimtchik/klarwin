@@ -1,26 +1,46 @@
+using System.Collections;
 using System.Diagnostics;
 using System.IO;
+using System.Text;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
+using System.Windows.Input;
+using System.Windows.Media;
+using System.Windows.Media.Animation;
 using System.Windows.Threading;
 using KlarWin.Services;
+using Microsoft.Win32;
 
 namespace KlarWin;
 
+public sealed class DetailRow
+{
+    public string Col1 { get; init; } = "";
+    public string Col2 { get; set; } = "";
+    public string Col3 { get; set; } = "";
+    public object? Tag { get; init; }
+    public bool IsChecked { get; set; }
+}
+
 public partial class MainWindow : Window
 {
-    private readonly PerformanceService _performance = new();
+    private readonly KlarWinSettings _settings = KlarWinSettings.Load();
+    private readonly PerformanceMonitor _performanceMonitor = new();
+    private readonly SystemHealthTracker _healthTracker = new();
     private readonly CleanupService _cleanup = new();
     private readonly SpeedService _speed = new();
     private readonly ShortcutOverlayService _overlay = new();
-    private readonly AutostartService _autostart = new();
+    private readonly AutostartService _autostart;
     private readonly SecureWipeService _wipe = new();
     private readonly RecoveryService _recovery = new();
     private readonly LicenseKeyService _keys = new();
     private readonly NetworkMonitorService _network = new();
     private readonly AiLoadService _ai = new();
     private readonly UpdateService _update = new();
+    private readonly SoftwareUpdateService _softwareUpdates = new();
     private UpdateInfo? _pendingUpdate;
+    private IReadOnlyList<SoftwareUpdateItem> _softwareUpdateItems = [];
     private readonly DispatcherTimer _timer;
     private string _mode = "";
     private string _aiFilter = "all";
@@ -33,50 +53,481 @@ public partial class MainWindow : Window
     private IReadOnlyList<AutostartEntry> _autostartItems = [];
     private IReadOnlyList<RecoverableItem> _recoverItems = [];
     private IReadOnlyList<LicenseKeyEntry> _keyItems = [];
+    private CleanupPreview? _cleanupPreview;
+    private readonly Dictionary<string, CheckBox> _optionChecks = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, CheckBox> _itemChecks = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Button[] _tileButtons;
+    private readonly DispatcherTimer _promoTimer;
+    private int _promoSlideIndex;
+    private FeaturePanelWindow? _featurePanel;
+    private SettingsWindow? _settingsWindow;
+    private Canvas? _detailCpuChart;
+    private Canvas? _detailRamChart;
+    private Canvas? _detailDiskChart;
+    private TextBlock? _detailCpuValue;
+    private TextBlock? _detailRamValue;
+    private TextBlock? _detailDiskValue;
+    private StackPanel? _detailHealthSection;
+    private TextBlock? _detailHealthOverall;
+    private StackPanel? _detailHealthCategories;
+    private StackPanel? _detailHealthHints;
+    private TextBlock? _detailHealthDisclaimer;
+    private StackPanel? _detailTrendSection;
+    private Canvas? _detailTrendCpuChart;
+    private Canvas? _detailTrendRamChart;
+    private Canvas? _detailTrendTempChart;
+    private TextBlock? _detailTrendHint;
+    private StackPanel? _detailTempSection;
+    private TextBlock? _detailTempUnavailable;
+    private TextBlock? _detailTempHint;
+    private TextBlock? _detailTempDiagBlock;
+    private bool _perfDiagVisible;
+    private ComboBox? _detailDiskVolumeBox;
+    private bool _detailDiskRefreshing;
+    private char? _selectedDiskLetter;
+    private int _lastVolumeCount;
+    private readonly Dictionary<string, (TextBlock Value, Canvas Chart, StackPanel Panel)> _detailTempRows = new(StringComparer.OrdinalIgnoreCase);
+    private WindowsIsoRecommendation _windowsIsoRecommendation =
+        WindowsIsoRecommendationService.Build(WindowsPcProfileService.Read());
+
+    private static readonly (string Title, string Body, string Bullet)[] PromoSlides =
+    [
+        ("BUCHFÜHRUNG. KLAR IM GRIFF.", "Einnahmen, Ausgaben und Belege übersichtlich — für Handwerk und Dienstleistung.", "Belege · Ausgaben · EÜR-Vorbereitung"),
+        ("TERMINE. NICHTS GEHT UNTER.", "Termine, Einsätze und Erinnerungen an einem Ort — für Sie und Ihr Team.", "Termine · Erinnerungen · Team-Kalender"),
+        ("ZEIT ERFASSEN. AUFTRÄGE ZUORDNEN.", "Arbeitszeiten sauber dokumentieren — für Abrechnung und den Überblick.", "Stunden · Aufträge · Auswertung"),
+        ("KUNDEN & AUFTRÄGE. EIN SYSTEM.", "DG CRM für Handwerk und Dienstleistung — auf ganz-soft.de.", "Kunden · Angebote · Aufträge")
+    ];
 
     public MainWindow()
     {
+        _autostart = new AutostartService(_settings);
         InitializeComponent();
+        PopulateTileFeatureLists();
+        _tileButtons =
+        [
+            TileClean, TileSpeed, TilePerf, TileOverlay, TileAutostart, TileWipe,
+            TileRecover, TileKeys, TileNetwork, TileAi, TileUpdate, TileBackup, TileUsb
+        ];
         _timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
         _timer.Tick += (_, _) => _ = RefreshLiveAsync();
+        _promoTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(60) };
+        _promoTimer.Tick += (_, _) => AdvancePromoSlide();
         Loaded += (_, _) =>
         {
+            ThemeService.Apply(this, _settings);
+            ApplyPromoBranding();
             VersionLabel.Text = $"Version {UpdateService.CurrentVersion}";
+            UpdateAdminUi();
+            ApplyPromoSlide(0, animate: false);
+            _promoTimer.Start();
+            EnsureWindowOnScreen();
+            UpdateTileGridColumns();
+            if (_settings.HideShortcutArrows && ShortcutOverlayService.IsAdministrator())
+            {
+                _overlay.EnsureHiddenPreference(true);
+            }
             _ = RefreshLiveAsync();
             _timer.Start();
             _ = QuietUpdateCheckAsync();
         };
+        SizeChanged += (_, _) => UpdateTileGridColumns();
         Closed += (_, _) =>
         {
             _timer.Stop();
+            _promoTimer.Stop();
             _wipeCts?.Cancel();
             _network.Dispose();
-            _performance.Dispose();
+            _performanceMonitor.Dispose();
+            CloseFeaturePanel();
         };
+    }
+
+    private void PopulateTileFeatureLists()
+    {
+        FeatureListUi.Fill(TileCleanFeatures, FeatureCatalog.Clean);
+        FeatureListUi.Fill(TileSpeedFeatures, FeatureCatalog.Speed);
+        FeatureListUi.Fill(TilePerfFeatures, FeatureCatalog.Performance);
+        FeatureListUi.Fill(TileOverlayFeatures, FeatureCatalog.Overlay);
+        FeatureListUi.Fill(TileAutostartFeatures, FeatureCatalog.Autostart);
+        FeatureListUi.Fill(TileWipeFeatures, FeatureCatalog.Wipe);
+        FeatureListUi.Fill(TileRecoverFeatures, FeatureCatalog.Recover);
+        FeatureListUi.Fill(TileKeysFeatures, FeatureCatalog.Keys);
+        FeatureListUi.Fill(TileNetworkFeatures, FeatureCatalog.Network);
+        FeatureListUi.Fill(TileAiFeatures, FeatureCatalog.AiLoad);
+        FeatureListUi.Fill(TileUpdateFeatures, FeatureCatalog.Updates);
+        FeatureListUi.Fill(TileBackupFeatures, FeatureCatalog.Backup);
+        FeatureListUi.Fill(TileUsbFeatures, FeatureCatalog.UsbStick);
+    }
+
+    private void UpdateAdminUi()
+    {
+        var isAdmin = ShortcutOverlayService.IsAdministrator();
+        AdminElevateButton.Content = isAdmin ? "Administrator aktiv" : "Adminrechte freischalten";
+        AdminElevateButton.ToolTip = isAdmin
+            ? "Klicken, um KlarWin ohne Administratorrechte neu zu starten"
+            : "KlarWin mit Administratorrechten neu starten (UAC-Abfrage)";
+    }
+
+    private void OnAdminElevateClick(object sender, RoutedEventArgs e)
+    {
+        if (ShortcutOverlayService.IsAdministrator())
+        {
+            var answer = MessageBox.Show(
+                this,
+                "KlarWin ohne Administratorrechten neu starten?\n\nEinige Funktionen (z. B. Windows-Temp bereinigen) sind dann eingeschränkt.",
+                "KlarWin",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Question);
+            if (answer == MessageBoxResult.Yes)
+            {
+                RequestNormalUserRelaunch();
+            }
+
+            return;
+        }
+
+        RequestAdminRelaunch();
+    }
+
+    private void OnHeaderDrag(object sender, MouseButtonEventArgs e)
+    {
+        if (e.ChangedButton != MouseButton.Left) return;
+        if (IsInteractiveElement(e.OriginalSource as DependencyObject)) return;
+
+        if (e.ClickCount == 2)
+        {
+            WindowState = WindowState == WindowState.Maximized ? WindowState.Normal : WindowState.Maximized;
+            return;
+        }
+
+        try
+        {
+            DragMove();
+        }
+        catch
+        {
+            // DragMove fails while window state is changing
+        }
+    }
+
+    private static bool IsInteractiveElement(DependencyObject? source)
+    {
+        while (source is not null)
+        {
+            if (source is Button or TextBoxBase or ComboBox or ListBox or ScrollBar) return true;
+            source = VisualTreeHelper.GetParent(source);
+        }
+
+        return false;
+    }
+
+    private void EnsureWindowOnScreen()
+    {
+        if (WindowState != WindowState.Normal) return;
+
+        var work = SystemParameters.WorkArea;
+        var maxWidth = Math.Max(MinWidth, work.Width - 40);
+        var maxHeight = Math.Max(MinHeight, work.Height - 40);
+        if (Width > maxWidth) Width = maxWidth;
+        if (Height > maxHeight) Height = maxHeight;
+
+        if (Top < work.Top) Top = work.Top + 8;
+        if (Left < work.Left) Left = work.Left + 8;
+        if (Top + Height > work.Bottom) Top = Math.Max(work.Top + 8, work.Bottom - Height);
+        if (Left + Width > work.Right) Left = Math.Max(work.Left + 8, work.Right - Width);
+    }
+
+    private void OnSettingsClick(object sender, RoutedEventArgs e)
+    {
+        CloseFeaturePanel();
+
+        if (_settingsWindow is { IsLoaded: true })
+        {
+            if (!_settingsWindow.IsVisible)
+            {
+                _settingsWindow.Show();
+            }
+
+            _settingsWindow.Activate();
+            return;
+        }
+
+        _settingsWindow = new SettingsWindow(_settings, () =>
+        {
+            ThemeService.Apply(this, _settings);
+            UpdateAdminUi();
+        })
+        {
+            Owner = this,
+            ShowInTaskbar = true
+        };
+        _settingsWindow.Closed += (_, _) => _settingsWindow = null;
+        _settingsWindow.Show();
+    }
+
+    private void ApplyPromoBranding()
+    {
+        var wordmark = GanzSoftBranding.LoadWordmark();
+        PromoLeftLogo.Source = wordmark;
+        PromoRightLogo.Source = wordmark;
+        PromoBottomBrand.Source = wordmark;
+        HeaderLogo.Source = GanzSoftBranding.LoadKlarWinIcon();
+    }
+
+    private void OnScrollViewerPreviewMouseWheel(object sender, MouseWheelEventArgs e)
+    {
+        if (sender is not ScrollViewer scrollViewer) return;
+        scrollViewer.ScrollToVerticalOffset(Math.Max(0, scrollViewer.VerticalOffset - e.Delta));
+        e.Handled = true;
+    }
+
+    private Window GetDialogOwner() =>
+        _featurePanel is { IsVisible: true } ? _featurePanel : this;
+
+    private async Task<T> RunWithInstallProgressAsync<T>(int totalHint, Func<IProgress<SoftwareInstallProgress>, Task<T>> work)
+    {
+        var owner = GetDialogOwner();
+        var wasEnabled = owner.IsEnabled;
+        owner.IsEnabled = false;
+        var progressWin = new InstallProgressWindow { Owner = owner };
+        progressWin.Apply(new SoftwareInstallProgress
+        {
+            Total = totalHint,
+            Headline = "Installation startet …",
+            Detail = "Bitte warten.",
+            IsIndeterminate = true
+        });
+        progressWin.Show();
+
+        var progress = new Progress<SoftwareInstallProgress>(p =>
+        {
+            Dispatcher.Invoke(() => progressWin.Apply(p));
+        });
+
+        try
+        {
+            return await work(progress);
+        }
+        finally
+        {
+            owner.IsEnabled = wasEnabled;
+            progressWin.Close();
+        }
+    }
+
+    private void OnPromoClick(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = "https://ganz-soft.de/",
+                UseShellExecute = true
+            });
+        }
+        catch
+        {
+            // ignore
+        }
+    }
+
+    public void ApplyChromeTheme(KlarWinSettings settings)
+    {
+        BrandTitle.FontFamily = new System.Windows.Media.FontFamily(
+            string.IsNullOrWhiteSpace(settings.FontFamilyTitle) ? "Bahnschrift" : settings.FontFamilyTitle);
+        BrandTitle.FontSize = Math.Clamp(settings.FontSizeTitle, 28, 96);
+        BrandTitle.Foreground = new System.Windows.Media.SolidColorBrush(
+            KlarWinSettings.ParseColor(settings.InkColor, System.Windows.Media.Color.FromRgb(0x18, 0x24, 0x1F)));
+        BrandSubtitle.Foreground = new System.Windows.Media.SolidColorBrush(
+            KlarWinSettings.ParseColor(settings.MuteColor, System.Windows.Media.Color.FromRgb(0x4A, 0x5C, 0x54)));
+        VersionLabel.Foreground = new System.Windows.Media.SolidColorBrush(
+            KlarWinSettings.ParseColor(settings.AccentColor, System.Windows.Media.Color.FromRgb(0x8C, 0x62, 0x39)));
+
+        var pos = settings.PromoPosition ?? "Bottom";
+        PromoBottom.Visibility = pos.Equals("Bottom", StringComparison.OrdinalIgnoreCase)
+            ? Visibility.Visible : Visibility.Collapsed;
+        PromoLeft.Visibility = pos.Equals("Left", StringComparison.OrdinalIgnoreCase)
+            ? Visibility.Visible : Visibility.Collapsed;
+        PromoRight.Visibility = pos.Equals("Right", StringComparison.OrdinalIgnoreCase)
+            ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    private void AdvancePromoSlide()
+    {
+        _promoSlideIndex = (_promoSlideIndex + 1) % PromoSlides.Length;
+        ApplyPromoSlide(_promoSlideIndex, animate: true);
+    }
+
+    private void ApplyPromoSlide(int index, bool animate)
+    {
+        index = ((index % PromoSlides.Length) + PromoSlides.Length) % PromoSlides.Length;
+        _promoSlideIndex = index;
+        var slide = PromoSlides[index];
+
+        void SetText()
+        {
+            PromoBottomTitle.Text = slide.Title;
+            PromoBottomBody.Text = slide.Body;
+            PromoBottomBullet.Text = slide.Bullet;
+            PromoLeftTitle.Text = slide.Title;
+            PromoLeftBody.Text = slide.Body;
+            PromoLeftBullet.Text = slide.Bullet;
+            PromoRightTitle.Text = slide.Title;
+            PromoRightBody.Text = slide.Body;
+            PromoRightBullet.Text = slide.Bullet;
+        }
+
+        if (!animate)
+        {
+            SetText();
+            PromoBottomTransform.X = 0;
+            PromoLeftTransform.X = 0;
+            PromoRightTransform.X = 0;
+            return;
+        }
+
+        var distance = 260.0;
+        var outDuration = TimeSpan.FromMilliseconds(700);
+        var inDuration = TimeSpan.FromMilliseconds(700);
+        var ease = new QuadraticEase { EasingMode = EasingMode.EaseInOut };
+        var completed = 0;
+
+        void OnOutComplete()
+        {
+            if (Interlocked.Increment(ref completed) < 3) return;
+            SetText();
+            AnimateIn(PromoBottomTransform, distance, inDuration, ease);
+            AnimateIn(PromoLeftTransform, 120, inDuration, ease);
+            AnimateIn(PromoRightTransform, 120, inDuration, ease);
+        }
+
+        AnimateOut(PromoBottomTransform, distance, outDuration, ease, OnOutComplete);
+        AnimateOut(PromoLeftTransform, 120, outDuration, ease, OnOutComplete);
+        AnimateOut(PromoRightTransform, 120, outDuration, ease, OnOutComplete);
+    }
+
+    private static void AnimateOut(TranslateTransform transform, double distance, TimeSpan duration, IEasingFunction ease, Action onComplete)
+    {
+        var anim = new DoubleAnimation(0, -distance, duration) { EasingFunction = ease };
+        anim.Completed += (_, _) => onComplete();
+        transform.BeginAnimation(TranslateTransform.XProperty, anim);
+    }
+
+    private static void AnimateIn(TranslateTransform transform, double distance, TimeSpan duration, IEasingFunction ease)
+    {
+        transform.X = distance;
+        var anim = new DoubleAnimation(distance, 0, duration) { EasingFunction = ease };
+        transform.BeginAnimation(TranslateTransform.XProperty, anim);
+    }
+
+    private void UpdateActiveTileHighlight()
+    {
+        Button? active = _mode switch
+        {
+            "clean" => TileClean,
+            "speed" => TileSpeed,
+            "perf" => TilePerf,
+            "overlay" => TileOverlay,
+            "autostart" => TileAutostart,
+            "wipe" => TileWipe,
+            "recover" => TileRecover,
+            "keys" => TileKeys,
+            "network" => TileNetwork,
+            "ai" => TileAi,
+            "software-updates" => TileUpdate,
+            "backup" => TileBackup,
+            "usb" => TileUsb,
+            _ => null
+        };
+
+        foreach (var tile in _tileButtons)
+        {
+            tile.Tag = tile == active ? "active" : "";
+        }
+    }
+
+    private void RequestAdminRelaunch()
+    {
+        if (ShortcutOverlayService.IsAdministrator())
+        {
+            return;
+        }
+
+        switch (Elevation.TryRelaunchAsAdministrator())
+        {
+            case ElevationAttempt.Cancelled:
+                PanelBody.Text = "Administrator-Anfrage abgebrochen. Sie können es jederzeit über „Adminrechte freischalten“ erneut versuchen.";
+                break;
+            case ElevationAttempt.Failed:
+                MessageBox.Show(
+                    this,
+                    "KlarWin konnte nicht mit Administratorrechten neu gestartet werden.\n\nAlternativ: Rechtsklick auf KlarWin → Als Administrator ausführen.",
+                    "KlarWin",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
+                break;
+        }
+    }
+
+    private void RequestNormalUserRelaunch()
+    {
+        if (Elevation.TryRelaunchAsNormalUser() == ElevationAttempt.Failed)
+        {
+            MessageBox.Show(
+                this,
+                "KlarWin konnte nicht ohne Administratorrechte neu gestartet werden.",
+                "KlarWin",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+        }
+    }
+
+    private void PromptAdminElevation(string message)
+    {
+        if (ShortcutOverlayService.IsAdministrator())
+        {
+            return;
+        }
+
+        var answer = MessageBox.Show(this, message, "KlarWin", MessageBoxButton.YesNo, MessageBoxImage.Question);
+        if (answer == MessageBoxResult.Yes)
+        {
+            RequestAdminRelaunch();
+        }
     }
 
     private async Task RefreshLiveAsync()
     {
-        var perf = _performance.Capture();
-        CpuBar.Width = BarWidth(perf.CpuPercent);
-        RamBar.Width = BarWidth(perf.RamPercent);
-        DiskBar.Width = BarWidth(100 - perf.DiskFreePercent);
-        CpuLabel.Text = $"{perf.CpuPercent:0}%";
-        RamLabel.Text = $"{perf.RamPercent:0}%";
-        DiskLabel.Text = $"{perf.DiskFreePercent:0}% frei";
+        var live = _performanceMonitor.Sample();
+        var perf = live.Snapshot;
+        CpuLabel.Text = $"{perf.CpuPercent:0} %";
+        RamLabel.Text = $"{perf.RamPercent:0} %";
+        TempLabel.Text = live.PrimaryCpuTempCelsius is double temp ? $"{temp:0} °C" : "—";
+
+        SparklineRenderer.Draw(TilePerfCpuChart, _performanceMonitor.CpuHistory.Snapshot(), 100,
+            Color.FromRgb(0x2F, 0x6A, 0x4A));
+        SparklineRenderer.DrawAutoScale(TilePerfRamChart, _performanceMonitor.RamHistory.Snapshot(),
+            Color.FromRgb(0x2F, 0x6A, 0x4A));
+        UpdateTileTemperatureChart(live);
+        UpdateTileHealthSummary(live);
 
         var net = _network.ReadLocal();
         ApplyNetworkBars(net);
         var ai = _ai.Capture(_aiFilter, perf.CpuPercent, perf.RamTotalBytes);
         ApplyAiBars(ai);
 
-        if (_mode == "network")
+        if (_mode == "perf")
+        {
+            EnsurePerfDetailCharts();
+            UpdatePerfDetailCharts(live);
+        }
+        else if (_mode == "network")
         {
             ShowNetworkPanel(net, refreshList: false);
         }
         else if (_mode == "ai")
         {
-            ShowAiPanel(ai, refreshApps: false);
+            UpdateAiLive(ai);
         }
 
         if (Interlocked.Exchange(ref _liveBusy, 1) == 1) return;
@@ -130,125 +581,1003 @@ public partial class MainWindow : Window
         AiGpuLabel.Text = ai.GpuAvailable ? $"{ai.GpuPercent:0}%" : "—";
     }
 
+    private static string FormatDriveSummary(string diskName, long freeBytes, long totalBytes)
+    {
+        var letter = diskName.TrimEnd(':').Trim();
+        return $"{letter}: {ByteSizeFormatter.Format(freeBytes, ByteSizeKind.Disk)} frei von {ByteSizeFormatter.Format(totalBytes, ByteSizeKind.Disk)}";
+    }
+
     private static double BarWidth(double percent) => Math.Max(0, Math.Min(180, 180 * percent / 100));
 
     private void ResetPanelChrome()
     {
         WipeModeBox.Visibility = Visibility.Collapsed;
         FilterBox.Visibility = Visibility.Collapsed;
-        DetailList.Visibility = Visibility.Collapsed;
-        DetailList.Items.Clear();
+        OptionsPanel.Visibility = Visibility.Collapsed;
+        SpeedInputPanel.Visibility = Visibility.Collapsed;
+        NetworkNotePanel.Visibility = Visibility.Collapsed;
+        UsbFormatPanel.Visibility = Visibility.Collapsed;
+        HidePanelProgress();
+        OptionsPanel.Children.Clear();
+        _optionChecks.Clear();
+        _itemChecks.Clear();
+        DetailGrid.Visibility = Visibility.Collapsed;
+        DetailGrid.ItemsSource = null;
         SecondaryAction.Visibility = Visibility.Collapsed;
+        TertiaryAction.Visibility = Visibility.Collapsed;
         PrimaryAction.Visibility = Visibility.Visible;
         PrimaryAction.IsEnabled = true;
+        PerfDetailPanel.Visibility = Visibility.Collapsed;
+        PanelBody.Visibility = Visibility.Visible;
+        _perfDiagVisible = false;
     }
 
-    private void OnCleanClick(object sender, RoutedEventArgs e)
+    private static UIElement BuildCheckboxContent(string label, ImageSource? icon)
+    {
+        var panel = new StackPanel { Orientation = Orientation.Horizontal };
+        if (icon is not null)
+        {
+            panel.Children.Add(new Image
+            {
+                Source = icon,
+                Width = 18,
+                Height = 18,
+                Margin = new Thickness(0, 0, 8, 0),
+                VerticalAlignment = VerticalAlignment.Center
+            });
+        }
+
+        panel.Children.Add(new TextBlock
+        {
+            Text = label,
+            TextWrapping = TextWrapping.Wrap,
+            VerticalAlignment = VerticalAlignment.Center
+        });
+        return panel;
+    }
+
+    private StackPanel ActiveContentHost => _featurePanel?.ContentHostPanel ?? DetailContentHost;
+
+    private void ShowPanelProgress(string text)
+    {
+        PanelProgressBar.Visibility = Visibility.Visible;
+        PanelProgressBar.IsIndeterminate = true;
+        PanelProgressText.Visibility = Visibility.Visible;
+        PanelProgressText.Text = text;
+        MoveProgressToTopOfContentHost();
+    }
+
+    private void HidePanelProgress()
+    {
+        PanelProgressBar.Visibility = Visibility.Collapsed;
+        PanelProgressText.Visibility = Visibility.Collapsed;
+    }
+
+    private void MoveProgressToTopOfContentHost()
+    {
+        var host = ActiveContentHost;
+        if (!host.Children.Contains(PanelProgressBar)) return;
+        host.Children.Remove(PanelProgressBar);
+        host.Children.Remove(PanelProgressText);
+        host.Children.Insert(0, PanelProgressBar);
+        host.Children.Insert(1, PanelProgressText);
+    }
+
+    private UIElement BuildOptionRow(string label, string? hint, ImageSource? icon, CheckBox cb)
+    {
+        var stack = new StackPanel { Margin = new Thickness(0, 0, 0, 12) };
+        cb.Content = BuildCheckboxContent(label, icon);
+        stack.Children.Add(cb);
+        if (!string.IsNullOrWhiteSpace(hint))
+        {
+            stack.Children.Add(new TextBlock
+            {
+                Text = hint,
+                Margin = new Thickness(26, 2, 0, 0),
+                FontSize = 13,
+                Foreground = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0x4A, 0x5C, 0x54)),
+                TextWrapping = TextWrapping.Wrap
+            });
+        }
+
+        return stack;
+    }
+
+    private void ShowOptions(IEnumerable<(string Id, string Label, string Hint, bool Default)> options)
+    {
+        OptionsPanel.Visibility = Visibility.Visible;
+        OptionsPanel.Children.Clear();
+        _optionChecks.Clear();
+        _itemChecks.Clear();
+        foreach (var opt in options)
+        {
+            var cb = new CheckBox
+            {
+                IsChecked = opt.Default,
+                Tag = opt.Id,
+                FontSize = 14
+            };
+            _optionChecks[opt.Id] = cb;
+            OptionsPanel.Children.Add(BuildOptionRow(opt.Label, opt.Hint, null, cb));
+        }
+    }
+
+    private void ShowItemCheckboxes(IEnumerable<(string Id, string Label, string Hint, bool Default, object Tag, ImageSource? Icon)> items)
+    {
+        OptionsPanel.Visibility = Visibility.Visible;
+        OptionsPanel.Children.Clear();
+        _itemChecks.Clear();
+        foreach (var item in items)
+        {
+            var cb = new CheckBox
+            {
+                IsChecked = item.Default,
+                Tag = item.Tag,
+                FontSize = 14
+            };
+            _itemChecks[item.Id] = cb;
+            OptionsPanel.Children.Add(BuildOptionRow(item.Label, item.Hint, item.Icon, cb));
+        }
+    }
+
+    private IEnumerable<T> CheckedItemTags<T>()
+    {
+        foreach (var pair in _itemChecks)
+        {
+            if (pair.Value.IsChecked == true && pair.Value.Tag is T tag)
+            {
+                yield return tag;
+            }
+        }
+    }
+
+    private IEnumerable<string> SelectedOptionIds() =>
+        _optionChecks.Where(p => p.Value.IsChecked == true).Select(p => p.Key);
+
+    private void SetDetailGridColumns(string c1, string c2, string c3, double w1 = 200, double w2 = 280, double w3 = 180)
+    {
+        if (DetailGrid.View is not GridView view || view.Columns.Count < 3) return;
+        view.Columns[0].Header = c1;
+        view.Columns[1].Header = c2;
+        view.Columns[2].Header = c3;
+        view.Columns[0].Width = w1;
+        view.Columns[1].Width = w2;
+        view.Columns[2].Width = w3;
+    }
+
+    private void ShowDetailRows(IEnumerable<DetailRow> rows)
+    {
+        DetailGrid.Visibility = Visibility.Visible;
+        DetailGrid.ItemsSource = rows.ToList();
+    }
+
+    private void OnCleanClick(object sender, RoutedEventArgs e) => SafeTile(() =>
     {
         _mode = "clean";
         ResetPanelChrome();
         PanelTitle.Text = "Speicher bereinigen";
-        PrimaryAction.Content = "Jetzt bereinigen";
-        SecondaryAction.Content = "Vorschau";
+        PrimaryAction.Content = "Auswahl löschen";
+        SecondaryAction.Content = "Vorschau aktualisieren";
         SecondaryAction.Visibility = Visibility.Visible;
-        PanelBody.Text = "Vorschau zeigt, wie viel Temp/Cache weg kann. Papierkorb wird mitgeleert.";
+        PanelBody.Text = "Wählen Sie, was gelöscht wird. Papierkorb ist standardmäßig aktiviert.";
         _ = ShowCleanupPreviewAsync();
-    }
+    });
 
-    private void OnSpeedClick(object sender, RoutedEventArgs e)
+    private void OnSpeedClick(object sender, RoutedEventArgs e) => SafeTile(() =>
     {
         _mode = "speed";
         ResetPanelChrome();
         PanelTitle.Text = "Windows beschleunigen";
-        PanelBody.Text = "Stellt Hochleistung ein, reduziert Animationen und leert den DNS-Cache.";
-        PrimaryAction.Content = "Tempo anwenden";
+        var includeLaptopPower = LaptopPowerService.SupportsExtendedPowerOptions();
+        PrimaryAction.Content = "Auswahl anwenden";
+        SpeedInputPanel.Visibility = Visibility.Visible;
+        var (acMinutes, dcMinutes) = SpeedService.GetCurrentScreenTimeouts();
+        ScreenTimeoutAcBox.Text = acMinutes?.ToString() ?? "";
+        ScreenTimeoutDcBox.Text = dcMinutes?.ToString() ?? "";
+        var timeoutSummary = acMinutes is int ac && dcMinutes is int dc
+            ? $"Bildschirm-Timeout: Netzteil {FormatTimeout(ac)} · Akku {FormatTimeout(dc)}."
+            : acMinutes is int acOnly
+                ? $"Bildschirm-Timeout: Netzteil {FormatTimeout(acOnly)}."
+                : dcMinutes is int dcOnly
+                    ? $"Bildschirm-Timeout: Akku {FormatTimeout(dcOnly)}."
+                    : "";
+        if (includeLaptopPower)
+        {
+            PanelBody.Text =
+                "Energieplan, Akku-Lademodus, Kühlprofil, Bildschirm, DNS und Animationen — alles wählbar.\n" +
+                timeoutSummary;
+        }
+        else if (!string.IsNullOrWhiteSpace(timeoutSummary))
+        {
+            PanelBody.Text = "Energieplan und weitere Optionen — nur auswählen, was Sie wirklich möchten.\n" + timeoutSummary;
+        }
+        ShowSpeedOptions(includeLaptopPower);
+    });
+
+    private static string FormatTimeout(int minutes) =>
+        minutes == 0 ? "nie aus" : $"{minutes} Min.";
+
+    private void UpdateTileGridColumns()
+    {
+        if (TileGrid is null) return;
+
+        var width = ActualWidth;
+        TileGrid.Columns = width switch
+        {
+            < 900 => 1,
+            < 1200 => 2,
+            < 1500 => 3,
+            < 1900 => 4,
+            _ => 5
+        };
     }
 
-    private void OnPerfClick(object sender, RoutedEventArgs e)
+    private void UpdateTileTemperatureChart(LivePerformanceSample live)
+    {
+        var sensor = live.Temperatures.FirstOrDefault(t => t.Celsius is double && !string.IsNullOrWhiteSpace(t.Id));
+        if (sensor?.Celsius is not double celsius)
+        {
+            TempLabel.Text = "—";
+            TilePerfTempChart.Children.Clear();
+            return;
+        }
+
+        TempLabel.Text = $"{celsius:0} °C";
+        var isGpu = TemperatureSparklineRenderer.IsGpuSensor(sensor.Name);
+        var history = _performanceMonitor.TempHistoryFor(sensor.Id);
+        if (history.Count >= 2)
+        {
+            TemperatureSparklineRenderer.Draw(TilePerfTempChart, history.Snapshot(), celsius, isGpu);
+        }
+    }
+
+    private void EnsurePerfDetailCharts()
+    {
+        if (_detailCpuChart is not null) return;
+
+        PerfDetailPanel.Children.Clear();
+        _detailTempRows.Clear();
+        _detailHealthSection = null;
+        EnsureHealthSection();
+        EnsureTrendSection();
+        AddPerfDetailChartRow("CPU-Auslastung", "#2F6A4A", 100, out _detailCpuValue, out _detailCpuChart);
+        AddPerfDetailChartRow("RAM-Auslastung", "#2F6A4A", 100, out _detailRamValue, out _detailRamChart);
+        AddPerfDetailDiskSection(out _detailDiskValue, out _detailDiskChart);
+
+        _detailTempSection = new StackPanel { Margin = new Thickness(0, 8, 0, 0) };
+        _detailTempSection.Children.Add(new TextBlock
+        {
+            Text = "Temperatur",
+            FontFamily = new FontFamily("Bahnschrift"),
+            FontSize = 14,
+            FontWeight = FontWeights.SemiBold,
+            Foreground = new SolidColorBrush(Color.FromRgb(0x18, 0x24, 0x1F))
+        });
+        _detailTempUnavailable = new TextBlock
+        {
+            FontSize = 13,
+            Foreground = new SolidColorBrush(Color.FromRgb(0x4A, 0x5C, 0x54)),
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 6, 0, 0),
+            Text = TemperatureService.FormatUnavailableMessage(LibreHardwareTemperatureReader.IsPawnIoInstalled)
+        };
+        _detailTempSection.Children.Add(_detailTempUnavailable);
+        _detailTempHint = new TextBlock
+        {
+            FontSize = 12,
+            Foreground = new SolidColorBrush(Color.FromRgb(0x8C, 0x62, 0x39)),
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 8, 0, 0),
+            Visibility = Visibility.Collapsed
+        };
+        _detailTempSection.Children.Add(_detailTempHint);
+        _detailTempDiagBlock = new TextBlock
+        {
+            FontSize = 12,
+            Foreground = new SolidColorBrush(Color.FromRgb(0x4A, 0x5C, 0x54)),
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 10, 0, 0),
+            Visibility = Visibility.Collapsed
+        };
+        _detailTempSection.Children.Add(_detailTempDiagBlock);
+        PerfDetailPanel.Children.Add(_detailTempSection);
+    }
+
+    private void AddPerfDetailChartRow(
+        string title,
+        string colorHex,
+        double maxValue,
+        out TextBlock valueBlock,
+        out Canvas chartCanvas,
+        double? minValue = null,
+        double barHeight = 64)
+    {
+        _ = colorHex;
+        _ = maxValue;
+        _ = minValue;
+
+        var panel = new StackPanel { Margin = new Thickness(0, 0, 0, 14) };
+        var header = new Grid { Margin = new Thickness(0, 0, 0, 0) };
+        header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        header.Children.Add(new TextBlock
+        {
+            Text = title,
+            FontFamily = new FontFamily("Bahnschrift"),
+            FontSize = 14,
+            FontWeight = FontWeights.SemiBold,
+            Foreground = new SolidColorBrush(Color.FromRgb(0x18, 0x24, 0x1F)),
+            VerticalAlignment = VerticalAlignment.Center
+        });
+        valueBlock = new TextBlock
+        {
+            FontSize = 13,
+            Foreground = new SolidColorBrush(Color.FromRgb(0x4A, 0x5C, 0x54)),
+            HorizontalAlignment = HorizontalAlignment.Right,
+            TextAlignment = TextAlignment.Right,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(12, 0, 0, 0)
+        };
+        Grid.SetColumn(valueBlock, 1);
+        header.Children.Add(valueBlock);
+        chartCanvas = new Canvas { Height = barHeight, Margin = new Thickness(0, 6, 0, 0), HorizontalAlignment = HorizontalAlignment.Stretch };
+        panel.Children.Add(header);
+        panel.Children.Add(chartCanvas);
+        PerfDetailPanel.Children.Add(panel);
+    }
+
+    private void AddPerfDetailDiskSection(out TextBlock valueBlock, out Canvas chartCanvas)
+    {
+        var panel = new StackPanel { Margin = new Thickness(0, 0, 0, 14) };
+        panel.Children.Add(new TextBlock
+        {
+            Text = "Speicher-Belegung",
+            FontFamily = new FontFamily("Bahnschrift"),
+            FontSize = 14,
+            FontWeight = FontWeights.SemiBold,
+            Foreground = new SolidColorBrush(Color.FromRgb(0x18, 0x24, 0x1F))
+        });
+        _detailDiskVolumeBox = new ComboBox
+        {
+            Margin = new Thickness(0, 6, 0, 0),
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            FontFamily = new FontFamily("Bahnschrift"),
+            FontSize = 14,
+            VerticalContentAlignment = VerticalAlignment.Center
+        };
+        _detailDiskVolumeBox.SelectionChanged += OnDetailDiskVolumeChanged;
+        panel.Children.Add(_detailDiskVolumeBox);
+        valueBlock = new TextBlock
+        {
+            FontSize = 13,
+            Foreground = new SolidColorBrush(Color.FromRgb(0x4A, 0x5C, 0x54)),
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 6, 0, 0)
+        };
+        panel.Children.Add(valueBlock);
+        chartCanvas = new Canvas { Height = 36, Margin = new Thickness(0, 6, 0, 0), HorizontalAlignment = HorizontalAlignment.Stretch };
+        panel.Children.Add(chartCanvas);
+        PerfDetailPanel.Children.Add(panel);
+        RefreshDetailDiskVolumeList();
+    }
+
+    private void RefreshDetailDiskVolumeList()
+    {
+        if (_detailDiskVolumeBox is null) return;
+
+        var volumes = VolumeInfoService.ListVolumes();
+        var previous = _selectedDiskLetter;
+        _detailDiskRefreshing = true;
+        _detailDiskVolumeBox.Items.Clear();
+        foreach (var volume in volumes)
+        {
+            _detailDiskVolumeBox.Items.Add(new ComboBoxItem
+            {
+                Content = VolumeInfoService.FormatComboLabel(volume),
+                Tag = volume
+            });
+        }
+
+        if (_detailDiskVolumeBox.Items.Count == 0)
+        {
+            _detailDiskRefreshing = false;
+            return;
+        }
+
+        var selectIndex = 0;
+        if (previous is char letter)
+        {
+            for (var i = 0; i < _detailDiskVolumeBox.Items.Count; i++)
+            {
+                if (_detailDiskVolumeBox.Items[i] is ComboBoxItem item
+                    && item.Tag is VolumeInfo info
+                    && info.Letter == letter)
+                {
+                    selectIndex = i;
+                    break;
+                }
+            }
+        }
+        else
+        {
+            var preferred = VolumeInfoService.DefaultSystemVolume(volumes);
+            if (preferred is not null)
+            {
+                for (var i = 0; i < _detailDiskVolumeBox.Items.Count; i++)
+                {
+                    if (_detailDiskVolumeBox.Items[i] is ComboBoxItem item
+                        && item.Tag is VolumeInfo info
+                        && info.Letter == preferred.Letter)
+                    {
+                        selectIndex = i;
+                        break;
+                    }
+                }
+            }
+        }
+
+        _detailDiskVolumeBox.SelectedIndex = selectIndex;
+        _detailDiskRefreshing = false;
+        UpdateDiskDetailFromSelection();
+    }
+
+    private void UpdateDiskVolumeEntries(IReadOnlyList<VolumeInfo> volumes)
+    {
+        if (_detailDiskVolumeBox is null) return;
+
+        foreach (var item in _detailDiskVolumeBox.Items.OfType<ComboBoxItem>())
+        {
+            if (item.Tag is not VolumeInfo old) continue;
+            var fresh = volumes.FirstOrDefault(v => v.Letter == old.Letter);
+            if (fresh is null) continue;
+            item.Content = VolumeInfoService.FormatComboLabel(fresh);
+            item.Tag = fresh;
+        }
+    }
+
+    private void OnDetailDiskVolumeChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_detailDiskRefreshing) return;
+        UpdateDiskDetailFromSelection();
+    }
+
+    private void UpdateDiskDetailFromSelection()
+    {
+        if (_detailDiskValue is null || _detailDiskChart is null) return;
+        if (_detailDiskVolumeBox?.SelectedItem is not ComboBoxItem item || item.Tag is not VolumeInfo volume)
+        {
+            _detailDiskValue.Text = "Kein Laufwerk verfügbar.";
+            _detailDiskChart.Children.Clear();
+            return;
+        }
+
+        _selectedDiskLetter = volume.Letter;
+        if (!volume.IsReady || volume.TotalBytes <= 0)
+        {
+            _detailDiskValue.Text = $"{volume.Letter}: {VolumeInfoService.KindLabel(volume.DriveType)} — nicht bereit oder leer.";
+            _detailDiskChart.Children.Clear();
+            return;
+        }
+
+        var usedBytes = Math.Max(0, volume.TotalBytes - volume.FreeBytes);
+        _detailDiskValue.Text = DiskUsageBarRenderer.FormatLegend(
+            $"{volume.Letter}:", usedBytes, volume.FreeBytes, volume.TotalBytes);
+        DiskUsageBarRenderer.Draw(_detailDiskChart, usedBytes, volume.TotalBytes);
+    }
+
+    private void UpdatePerfDetailCharts(LivePerformanceSample live)
+    {
+        if (_detailCpuChart is null) return;
+
+        var perf = live.Snapshot;
+        _detailCpuValue!.Text = $"{perf.CpuPercent:0} %";
+        _detailRamValue!.Text = $"{perf.RamPercent:0} %";
+        if (_detailDiskVolumeBox is not null)
+        {
+            var volumes = VolumeInfoService.ListVolumes();
+            if (volumes.Count != _lastVolumeCount)
+            {
+                _lastVolumeCount = volumes.Count;
+                RefreshDetailDiskVolumeList();
+            }
+            else
+            {
+                UpdateDiskVolumeEntries(volumes);
+                UpdateDiskDetailFromSelection();
+            }
+        }
+
+        SparklineRenderer.Draw(_detailCpuChart, _performanceMonitor.CpuHistory.Snapshot(), 100,
+            Color.FromRgb(0x2F, 0x6A, 0x4A));
+        SparklineRenderer.DrawAutoScale(_detailRamChart!, _performanceMonitor.RamHistory.Snapshot(),
+            Color.FromRgb(0x2F, 0x6A, 0x4A));
+        UpdateDetailTemperatureRows(live);
+        UpdateHealthSection(live);
+        UpdateTrendSection();
+    }
+
+    private void EnsureTrendSection()
+    {
+        if (_detailTrendSection is not null) return;
+
+        var panel = new StackPanel { Margin = new Thickness(0, 0, 0, 18) };
+        panel.Children.Add(new TextBlock
+        {
+            Text = "Verlauf (24 Stunden)",
+            FontFamily = new FontFamily("Bahnschrift"),
+            FontSize = 14,
+            FontWeight = FontWeights.SemiBold,
+            Foreground = new SolidColorBrush(Color.FromRgb(0x18, 0x24, 0x1F))
+        });
+        _detailTrendHint = new TextBlock
+        {
+            FontSize = 11,
+            Foreground = new SolidColorBrush(Color.FromRgb(0x6B, 0x7C, 0x75)),
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 4, 0, 8),
+            Text = "Ein Messpunkt pro Minute — Daten bleiben lokal gespeichert."
+        };
+        panel.Children.Add(_detailTrendHint);
+        _detailTrendCpuChart = AddTrendChartRow(panel, "CPU (24 h)");
+        _detailTrendRamChart = AddTrendChartRow(panel, "RAM (24 h)");
+        _detailTrendTempChart = AddTrendChartRow(panel, "CPU-Temperatur (24 h)");
+        _detailTrendSection = panel;
+        PerfDetailPanel.Children.Insert(1, panel);
+    }
+
+    private static Canvas AddTrendChartRow(StackPanel parent, string title)
+    {
+        var block = new StackPanel { Margin = new Thickness(0, 0, 0, 10) };
+        block.Children.Add(new TextBlock
+        {
+            Text = title,
+            FontFamily = new FontFamily("Bahnschrift"),
+            FontSize = 12,
+            FontWeight = FontWeights.SemiBold,
+            Foreground = new SolidColorBrush(Color.FromRgb(0x18, 0x24, 0x1F))
+        });
+        var chart = new Canvas { Height = 48, Margin = new Thickness(0, 4, 0, 0), HorizontalAlignment = HorizontalAlignment.Stretch };
+        block.Children.Add(chart);
+        parent.Children.Add(block);
+        return chart;
+    }
+
+    private void UpdateTrendSection()
+    {
+        EnsureTrendSection();
+        if (_detailTrendCpuChart is null || _detailTrendRamChart is null || _detailTrendTempChart is null) return;
+
+        var store = _performanceMonitor.TrendStore;
+        var cpu = store.CpuSeries();
+        var ram = store.RamSeries();
+        var temp = store.CpuTempSeries();
+        if (_detailTrendHint is not null)
+        {
+            _detailTrendHint.Text = store.Points.Count switch
+            {
+                0 => "Verlauf startet — ein Messpunkt pro Minute (max. 24 Stunden).",
+                1 => "Erster Messpunkt — Verlauf füllt sich über die nächsten Minuten.",
+                _ => $"Verlauf: {store.Points.Count} Messpunkte (max. 24 h, lokal gespeichert)."
+            };
+        }
+
+        if (cpu.Count >= 2)
+        {
+            SparklineRenderer.Draw(_detailTrendCpuChart, cpu, 100, Color.FromRgb(0x2F, 0x6A, 0x4A));
+        }
+
+        if (ram.Count >= 2)
+        {
+            SparklineRenderer.DrawAutoScale(_detailTrendRamChart, ram, Color.FromRgb(0x2F, 0x6A, 0x4A));
+        }
+
+        if (temp.Count >= 2)
+        {
+            TemperatureSparklineRenderer.Draw(_detailTrendTempChart, temp, temp[^1], isGpu: false);
+        }
+    }
+
+    private void EnsureHealthSection()
+    {
+        if (_detailHealthSection is not null) return;
+
+        var panel = new StackPanel { Margin = new Thickness(0, 0, 0, 18) };
+        panel.Children.Add(new TextBlock
+        {
+            Text = "System-Gesundheit",
+            FontFamily = new FontFamily("Bahnschrift"),
+            FontSize = 14,
+            FontWeight = FontWeights.SemiBold,
+            Foreground = new SolidColorBrush(Color.FromRgb(0x18, 0x24, 0x1F))
+        });
+
+        _detailHealthOverall = new TextBlock
+        {
+            FontSize = 13,
+            FontWeight = FontWeights.SemiBold,
+            Margin = new Thickness(0, 6, 0, 0),
+            TextWrapping = TextWrapping.Wrap
+        };
+        panel.Children.Add(_detailHealthOverall);
+
+        _detailHealthCategories = new StackPanel { Margin = new Thickness(0, 8, 0, 0) };
+        panel.Children.Add(_detailHealthCategories);
+
+        _detailHealthHints = new StackPanel { Margin = new Thickness(0, 10, 0, 0) };
+        panel.Children.Add(_detailHealthHints);
+
+        _detailHealthDisclaimer = new TextBlock
+        {
+            FontSize = 11,
+            Foreground = new SolidColorBrush(Color.FromRgb(0x6B, 0x7C, 0x75)),
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 10, 0, 0)
+        };
+        panel.Children.Add(_detailHealthDisclaimer);
+
+        _detailHealthSection = panel;
+        PerfDetailPanel.Children.Insert(0, panel);
+    }
+
+    private void UpdateHealthSection(LivePerformanceSample live)
+    {
+        EnsureHealthSection();
+        if (_detailHealthOverall is null || _detailHealthCategories is null || _detailHealthHints is null
+            || _detailHealthDisclaimer is null)
+        {
+            return;
+        }
+
+        var report = SystemHealthService.Evaluate(
+            live,
+            _healthTracker,
+            ShortcutOverlayService.IsAdministrator());
+
+        _detailHealthOverall.Text = $"● {TemperatureZones.OverallLabel(report.Overall)} — {report.OverallSummary}";
+        _detailHealthOverall.Foreground = new SolidColorBrush(TemperatureZones.LevelColor(report.Overall));
+
+        _detailHealthCategories.Children.Clear();
+        foreach (var category in report.Categories)
+        {
+            _detailHealthCategories.Children.Add(HealthBarRenderer.CreateCategoryRow(category));
+            _detailHealthCategories.Children.Add(new TextBlock
+            {
+                Text = category.Summary,
+                FontSize = 11,
+                Foreground = new SolidColorBrush(Color.FromRgb(0x4A, 0x5C, 0x54)),
+                TextWrapping = TextWrapping.Wrap,
+                Margin = new Thickness(0, 0, 0, 4)
+            });
+        }
+
+        _detailHealthHints.Children.Clear();
+        foreach (var hint in report.Hints)
+        {
+            var hintPanel = new StackPanel { Margin = new Thickness(0, 0, 0, 8) };
+            hintPanel.Children.Add(new TextBlock
+            {
+                Text = hint.Title,
+                FontSize = 12,
+                FontWeight = FontWeights.SemiBold,
+                Foreground = new SolidColorBrush(TemperatureZones.LevelColor(hint.Level)),
+                TextWrapping = TextWrapping.Wrap
+            });
+            hintPanel.Children.Add(new TextBlock
+            {
+                Text = "→ " + hint.Message,
+                FontSize = 12,
+                Foreground = new SolidColorBrush(Color.FromRgb(0x4A, 0x5C, 0x54)),
+                TextWrapping = TextWrapping.Wrap,
+                Margin = new Thickness(0, 2, 0, 0)
+            });
+            _detailHealthHints.Children.Add(hintPanel);
+        }
+
+        _detailHealthDisclaimer.Text = report.Disclaimer;
+    }
+
+    private void UpdateTileHealthSummary(LivePerformanceSample live)
+    {
+        var report = SystemHealthService.Evaluate(
+            live,
+            _healthTracker,
+            ShortcutOverlayService.IsAdministrator());
+        TilePerfHealthLabel.Text = SystemHealthService.FormatTileSummary(report);
+        TilePerfHealthLabel.Foreground = new SolidColorBrush(TemperatureZones.LevelColor(report.Overall));
+    }
+
+    private void UpdateDetailTemperatureRows(LivePerformanceSample live)
+    {
+        if (_detailTempSection is null) return;
+
+        var sensors = FilterTemperatureSensorsForDisplay(
+            live.Temperatures
+                .Where(t => t.Celsius is double && !string.IsNullOrWhiteSpace(t.Id))
+                .ToList());
+        var activeIds = sensors.Select(s => s.Id).ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var staleId in _detailTempRows.Keys.Where(id => !activeIds.Contains(id)).ToList())
+        {
+            if (_detailTempRows.TryGetValue(staleId, out var staleRow))
+            {
+                _detailTempSection.Children.Remove(staleRow.Panel);
+                _detailTempRows.Remove(staleId);
+            }
+        }
+
+        if (_detailTempUnavailable is not null)
+        {
+            _detailTempUnavailable.Visibility = sensors.Count == 0 && _detailTempRows.Count == 0
+                ? Visibility.Visible
+                : Visibility.Collapsed;
+            if (_detailTempUnavailable.Visibility == Visibility.Visible)
+            {
+                _detailTempUnavailable.Text = TemperatureService.FormatUnavailableMessage(
+                    LibreHardwareTemperatureReader.IsPawnIoInstalled);
+            }
+        }
+
+        if (_detailTempHint is not null)
+        {
+            var hint = TemperatureDiagnosticsService.BuildCompactHint(
+                live.Temperatures, _performanceMonitor.HardwareTemperatureReader);
+            _detailTempHint.Text = hint;
+            _detailTempHint.Visibility = string.IsNullOrWhiteSpace(hint)
+                ? Visibility.Collapsed
+                : Visibility.Visible;
+        }
+
+        foreach (var sensor in sensors)
+        {
+            if (!_detailTempRows.TryGetValue(sensor.Id, out var row))
+            {
+                row = CreateTempSensorRow(sensor.Name);
+                _detailTempRows[sensor.Id] = row;
+                _detailTempSection.Children.Add(row.Panel);
+            }
+
+            var isGpu = TemperatureSparklineRenderer.IsGpuSensor(sensor.Name);
+            row.Value.Text = $"{sensor.Celsius:0} °C";
+            row.Value.Foreground = new SolidColorBrush(
+                TemperatureSparklineRenderer.ZoneColor(sensor.Celsius!.Value, isGpu));
+
+            var history = _performanceMonitor.TempHistoryFor(sensor.Id);
+            if (history.Count >= 2)
+            {
+                TemperatureSparklineRenderer.Draw(row.Chart, history.Snapshot(), sensor.Celsius, isGpu);
+            }
+        }
+    }
+
+    private static List<TemperatureSensor> FilterTemperatureSensorsForDisplay(IReadOnlyList<TemperatureSensor> sensors)
+    {
+        var list = sensors.ToList();
+        if (list.Any(s => s.Name.Contains("Package", StringComparison.OrdinalIgnoreCase)))
+        {
+            list = list
+                .Where(s => !s.Name.Contains("Distance to TjMax", StringComparison.OrdinalIgnoreCase))
+                .ToList();
+        }
+
+        return list;
+    }
+
+    private static (TextBlock Value, Canvas Chart, StackPanel Panel) CreateTempSensorRow(string sensorName)
+    {
+        var panel = new StackPanel { Margin = new Thickness(0, 0, 0, 18) };
+        var header = new Grid { Margin = new Thickness(0, 0, 0, 6) };
+        header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        header.Children.Add(new TextBlock
+        {
+            Text = sensorName,
+            FontSize = 13,
+            Foreground = new SolidColorBrush(Color.FromRgb(0x18, 0x24, 0x1F)),
+            TextWrapping = TextWrapping.NoWrap,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            Margin = new Thickness(0, 0, 12, 0)
+        });
+        var valueBlock = new TextBlock
+        {
+            FontSize = 13,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            MinWidth = 72,
+            Margin = new Thickness(0, 0, 0, 0),
+            TextAlignment = TextAlignment.Right
+        };
+        Grid.SetColumn(valueBlock, 1);
+        header.Children.Add(valueBlock);
+        var chart = new Canvas
+        {
+            Height = 56,
+            Margin = new Thickness(0, 0, 0, 0),
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            ClipToBounds = true
+        };
+        panel.Children.Add(header);
+        panel.Children.Add(chart);
+        return (valueBlock, chart, panel);
+    }
+
+    private void ShowTemperatureDiagnostics()
+    {
+        _perfDiagVisible = !_perfDiagVisible;
+        SecondaryAction.Content = _perfDiagVisible ? "Diagnose ausblenden" : "Temperatur-Diagnose";
+
+        if (_detailTempDiagBlock is null)
+        {
+            return;
+        }
+
+        if (!_perfDiagVisible)
+        {
+            _detailTempDiagBlock.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        var probes = TemperatureDiagnosticsService.ProbeAll(_performanceMonitor.HardwareTemperatureReader);
+        _detailTempDiagBlock.Text = TemperatureDiagnosticsService.FormatReport(
+            probes, ShortcutOverlayService.IsAdministrator());
+        _detailTempDiagBlock.Visibility = Visibility.Visible;
+    }
+
+    private void OnPerfClick(object sender, RoutedEventArgs e) => SafeTile(() =>
     {
         _mode = "perf";
+        _perfDiagVisible = false;
         ResetPanelChrome();
         PrimaryAction.Visibility = Visibility.Collapsed;
-        var snap = _performance.Capture();
-        PanelTitle.Text = "Leistung";
-        PanelBody.Text = $"CPU {snap.CpuPercent:0}% · RAM {CleanupService.FormatBytes(snap.RamUsedBytes)} von {CleanupService.FormatBytes(snap.RamTotalBytes)} · {snap.DiskName} noch {CleanupService.FormatBytes(snap.DiskFreeBytes)} frei";
-    }
+        SecondaryAction.Content = "Temperatur-Diagnose";
+        SecondaryAction.Visibility = Visibility.Visible;
+        if (!PawnIoInstallService.IsInstalled)
+        {
+            TertiaryAction.Content = "PawnIO installieren";
+            TertiaryAction.Visibility = Visibility.Visible;
+        }
 
-    private void OnOverlayClick(object sender, RoutedEventArgs e)
+        PanelTitle.Text = "Leistung";
+        PanelBody.Visibility = Visibility.Collapsed;
+        PerfDetailPanel.Visibility = Visibility.Visible;
+        EnsurePerfDetailCharts();
+        _lastVolumeCount = VolumeInfoService.ListVolumes().Count;
+        if (_detailTempDiagBlock is not null)
+        {
+            _detailTempDiagBlock.Visibility = Visibility.Collapsed;
+        }
+
+        UpdatePerfDetailCharts(_performanceMonitor.Sample());
+    });
+
+    private void OnBackupClick(object sender, RoutedEventArgs e) => SafeTile(() =>
+    {
+        _mode = "backup";
+        ResetPanelChrome();
+        PanelTitle.Text = "Win Sicherung";
+        PanelBody.Text = BuildIsoAwareBody(
+            "Sicherung vor größeren Änderungen — Wiederherstellungspunkt oder passende Windows-ISO.\n\n" +
+            "• Wiederherstellungspunkt: Schnappschuss von Windows-Einstellungen und Treibern.\n" +
+            "• Stick unter Linux (ext4)? Kachel „USB-Stick“ — für Windows umformatieren.\n" +
+            "• Windows + Linux auf einem Stick: z. B. Ventoy mit ISO-Dateien.\n\n" +
+            (SystemBackupService.IsSystemRestoreEnabled()
+                ? "Systemwiederherstellung: aktiv."
+                : "Systemwiederherstellung: deaktiviert — unter „Systemschutz“ aktivieren."));
+        PrimaryAction.Content = "Wiederherstellungspunkt erstellen";
+        SecondaryAction.Content = "ISO automatisch laden";
+        SecondaryAction.Visibility = Visibility.Visible;
+        TertiaryAction.Content = "Systemschutz öffnen";
+        TertiaryAction.Visibility = Visibility.Visible;
+    });
+
+    private void OnUsbClick(object sender, RoutedEventArgs e) => SafeTile(() =>
+    {
+        _mode = "usb";
+        ResetPanelChrome();
+        PanelTitle.Text = "USB-Stick";
+        PanelBody.Text = BuildIsoAwareBody(
+            "Wechseldatenträger (USB-Stick/SD) für Windows vorbereiten — z. B. wenn der Stick unter Linux (ext4) formatiert ist.\n\n" +
+            "Stick wählen, Dateisystem wählen, dann formatieren. Alle Daten auf dem Stick werden gelöscht.\n\n" +
+            "NTFS: Windows-Standard · exFAT: große Sticks / andere Geräte · FAT32: für bootfähige Medien.");
+        PrimaryAction.Content = "Stick formatieren";
+        SecondaryAction.Content = "Liste aktualisieren";
+        SecondaryAction.Visibility = Visibility.Visible;
+        TertiaryAction.Content = "ISO automatisch laden";
+        TertiaryAction.Visibility = Visibility.Visible;
+        UsbFormatPanel.Visibility = Visibility.Visible;
+        RefreshUsbDriveList();
+    });
+
+    private void OnOverlayClick(object sender, RoutedEventArgs e) => SafeTile(() =>
     {
         _mode = "overlay";
         ResetPanelChrome();
         PanelTitle.Text = "Verknüpfungspfeile";
-        PanelBody.Text = "Blendet den kleinen Pfeil auf Desktop-Verknüpfungen aus. Updates setzen ihn oft wieder.";
+        var current = _overlay.CurrentOverlaySetting();
+        var admin = ShortcutOverlayService.IsAdministrator()
+            ? "Ja"
+            : "Nein — oben rechts „Adminrechte freischalten“ klicken";
+        PanelBody.Text =
+            $"Aktuell: {current}\n" +
+            $"Administrator: {admin}\n\n" +
+            "Windows blendet bei Verknüpfungen standardmäßig einen kleinen Pfeil ein. " +
+            "Nach Updates kommt er manchmal zurück — KlarWin kann ihn dauerhaft ausblenden.\n\n" +
+            "Falls Pfeile nach dem Klick noch sichtbar sind: PC neu starten oder abmelden.";
         PrimaryAction.Content = "Pfeile ausblenden";
         SecondaryAction.Content = "Pfeile wiederherstellen";
         SecondaryAction.Visibility = Visibility.Visible;
-    }
+    });
 
-    private void OnAutostartClick(object sender, RoutedEventArgs e)
+    private void OnAutostartClick(object sender, RoutedEventArgs e) => SafeTile(() =>
     {
         _mode = "autostart";
         ResetPanelChrome();
         PanelTitle.Text = "Autostart";
         PrimaryAction.Content = "Auswahl deaktivieren";
-        SecondaryAction.Content = "Task-Manager";
+        SecondaryAction.Content = "Auswahl aktivieren";
         SecondaryAction.Visibility = Visibility.Visible;
-        DetailList.Visibility = Visibility.Visible;
-        _autostartItems = _autostart.ListEntries();
-        DetailList.Items.Clear();
-        foreach (var item in _autostartItems)
-        {
-            DetailList.Items.Add($"{item.Name}  ·  {item.Location}");
-        }
+        TertiaryAction.Content = "Programm hinzufügen";
+        TertiaryAction.Visibility = Visibility.Visible;
+        _ = RefreshAutostartListAsync();
+    });
 
-        PanelBody.Text = _autostartItems.Count == 0
-            ? "Keine klassischen Autostart-Einträge gefunden."
-            : $"{_autostartItems.Count} Einträge. Markieren und deaktivieren — oder Task-Manager öffnen.";
-    }
-
-    private void OnWipeClick(object sender, RoutedEventArgs e)
+    private void OnWipeClick(object sender, RoutedEventArgs e) => SafeTile(() =>
     {
         _mode = "wipe";
         ResetPanelChrome();
         WipeModeBox.Visibility = Visibility.Visible;
-        PanelTitle.Text = "Freien Speicher überschreiben";
-        PrimaryAction.Content = "Überschreiben starten";
-        SecondaryAction.Content = "Abbrechen";
+        PanelTitle.Text = "Sicher löschen";
+        PrimaryAction.Content = "② Freien Speicher überschreiben";
+        SecondaryAction.Content = "① Datei/Ordner sicher löschen …";
         SecondaryAction.Visibility = Visibility.Visible;
 
         var root = Path.GetPathRoot(Environment.SystemDirectory) ?? "C:\\";
-        var ssd = _wipe.LooksLikeSsd(root);
-        var free = new DriveInfo(root).AvailableFreeSpace;
-        PanelBody.Text = ssd
-            ? $"SSD erkannt auf {root}. Freier Speicher ({CleanupService.FormatBytes(free)}) wird überschrieben — Dateien bleiben. Auf SSDs reicht meist 1× Nullen; Gutmann ist sehr langsam und oft unnötig."
-            : $"Freier Speicher auf {root} ({CleanupService.FormatBytes(free)}) wird überschrieben. Vorhandene Dateien bleiben. Gutmann (35×) dauert sehr lange.";
-    }
+        long free;
+        try
+        {
+            free = ByteSizeFormatter.SanitizeBytes(new DriveInfo(root).AvailableFreeSpace, ByteSizeKind.Disk);
+        }
+        catch
+        {
+            free = 0;
+        }
 
-    private void OnRecoverClick(object sender, RoutedEventArgs e)
+        var ssd = false;
+        try { ssd = _wipe.LooksLikeSsd(root); } catch { /* WMI optional */ }
+        var freeText = ByteSizeFormatter.Format(free, ByteSizeKind.Disk);
+        PanelBody.Text =
+            "Zwei getrennte Aktionen — bitte nicht verwechseln:\n\n" +
+            $"① „Datei/Ordner sicher löschen …“ — Sie wählen eine Datei oder einen Ordner. " +
+            "Diese wird überschrieben und danach entfernt.\n\n" +
+            $"② „Freien Speicher überschreiben“ — Ihre Dateien und Programme auf {root} bleiben unberührt. " +
+            $"Nur der freie Speicher ({freeText}) wird mit Nullen überschrieben, damit bereits gelöschte Reste nicht wiederherstellbar sind." +
+            (ssd ? " Auf SSD reicht meist ein Durchlauf." : "");
+    });
+
+    private void OnRecoverClick(object sender, RoutedEventArgs e) => SafeTile(() =>
     {
         _mode = "recover";
         ResetPanelChrome();
-        PanelTitle.Text = "Papierkorb wiederherstellen";
+        PanelTitle.Text = "Dateien retten";
         PrimaryAction.Content = "Auswahl wiederherstellen";
         SecondaryAction.Content = "Liste aktualisieren";
         SecondaryAction.Visibility = Visibility.Visible;
-        DetailList.Visibility = Visibility.Visible;
         RefreshRecoverList();
-    }
+    });
 
-    private void OnKeysClick(object sender, RoutedEventArgs e)
+    private void OnKeysClick(object sender, RoutedEventArgs e) => SafeTile(() =>
     {
         _mode = "keys";
         ResetPanelChrome();
         PanelTitle.Text = "Software-Keys sichern";
-        PrimaryAction.Content = "Als Datei speichern";
+        PrimaryAction.Content = "Als Textdatei speichern";
         SecondaryAction.Content = "Erneut lesen";
         SecondaryAction.Visibility = Visibility.Visible;
-        DetailList.Visibility = Visibility.Visible;
-        RefreshKeyList();
-    }
+        TertiaryAction.Content = "Als HTML (druckbar)";
+        TertiaryAction.Visibility = Visibility.Visible;
+        SetDetailGridColumns("Programm", "Product Key", "Art", 220, 420, 140);
+        _ = RefreshKeyListAsync();
+    });
 
-    private void OnNetworkClick(object sender, RoutedEventArgs e)
+    private void OnNetworkClick(object sender, RoutedEventArgs e) => SafeTile(() =>
     {
         _mode = "network";
         ResetPanelChrome();
@@ -256,42 +1585,481 @@ public partial class MainWindow : Window
         PrimaryAction.Content = "Aktualisieren";
         SecondaryAction.Content = "Router öffnen";
         SecondaryAction.Visibility = Visibility.Visible;
-        DetailList.Visibility = Visibility.Visible;
+        NetworkNotePanel.Visibility = Visibility.Visible;
+        NetworkNoteBox.Text = "";
+        NetworkNoteBox.IsEnabled = false;
+        NetworkNoteHint.Text = "Gerät in der Liste wählen, dann Bemerkung eintragen (z. B. Handy Chef Sohn).";
+        SetDetailGridColumns("Gerät / Bemerkung", "IP-Adresse", "Hersteller / MAC", 220, 120, 260);
         ShowNetworkPanel(_network.Last, refreshList: true);
         _ = ForceNetworkRefreshAsync();
-    }
+    });
 
-    private void OnAiClick(object sender, RoutedEventArgs e)
+    private void OnAiClick(object sender, RoutedEventArgs e) => SafeTile(() =>
     {
         _mode = "ai";
         ResetPanelChrome();
         FilterBox.Visibility = Visibility.Visible;
         PanelTitle.Text = "KI-Last";
         PrimaryAction.Visibility = Visibility.Collapsed;
-        var perf = _performance.Capture();
-        var ai = _ai.Capture(_aiFilter, perf.CpuPercent, perf.RamTotalBytes);
-        ShowAiPanel(ai, refreshApps: true);
+        SetDetailGridColumns("Prozess", "CPU", "RAM", 200, 80, 120);
+        _ = ShowAiPanelAsync(refreshApps: true);
+    });
+
+    private void OnUpdateClick(object sender, RoutedEventArgs e) => SafeTile(() =>
+    {
+        _mode = "software-updates";
+        ResetPanelChrome();
+        PanelTitle.Text = "Apps & Treiber aktualisieren";
+        PrimaryAction.Content = "Auswahl installieren";
+        SecondaryAction.Content = "Liste aktualisieren";
+        SecondaryAction.Visibility = Visibility.Visible;
+        TertiaryAction.Content = "Alles auswählen";
+        TertiaryAction.Visibility = Visibility.Visible;
+        PanelBody.Text = "Updates per Checkbox wählen, dann „Auswahl installieren“ — winget bzw. Windows Update startet für die markierten Einträge.";
+        _ = RefreshSoftwareUpdatesAsync();
+    });
+
+    private void SafeTile(Action action)
+    {
+        try
+        {
+            action();
+            UpdateActiveTileHighlight();
+            OpenFeaturePanel();
+        }
+        catch (Exception ex)
+        {
+            PanelTitle.Text = "Fehler";
+            PanelBody.Text = UserFriendlyErrors.Translate(ex);
+            UpdateActiveTileHighlight();
+            OpenFeaturePanel();
+        }
     }
 
-    private void OnUpdateClick(object sender, RoutedEventArgs e)
+    private void OpenFeaturePanel()
     {
-        _mode = "update";
-        ResetPanelChrome();
-        PanelTitle.Text = "Update";
-        PrimaryAction.Content = "Jetzt aktualisieren";
-        SecondaryAction.Content = "Erneut prüfen";
-        SecondaryAction.Visibility = Visibility.Visible;
-        PanelBody.Text = $"Installierte Version: {UpdateService.CurrentVersion}. Prüfe Server …";
-        PrimaryAction.Visibility = Visibility.Collapsed;
-        _ = CheckUpdateAsync(applyPrompt: false);
+        CloseFeaturePanel();
+
+        _featurePanel = new FeaturePanelWindow { Owner = this, Title = $"KlarWin — {PanelTitle.Text}" };
+        _featurePanel.Closed += OnFeaturePanelClosed;
+
+        _featurePanel.AttachHeader(PanelTitle);
+        _featurePanel.AttachButtons(PanelButtonHost.Children.Cast<UIElement>().ToArray());
+
+        if (PanelBody.Visibility == Visibility.Visible)
+        {
+            _featurePanel.AttachExtra(PanelBody);
+        }
+        else
+        {
+            _featurePanel.AttachExtra(null);
+        }
+
+        var content = DetailContentHost.Children.Cast<UIElement>().ToArray();
+        _featurePanel.AttachContent(content);
+        _featurePanel.Show();
+    }
+
+    private void OnFeaturePanelClosed(object? sender, EventArgs e)
+    {
+        if (sender is not FeaturePanelWindow window) return;
+        window.Closed -= OnFeaturePanelClosed;
+        if (!ReferenceEquals(window, _featurePanel)) return;
+        RestorePanelFromFeatureWindow(window);
+        _featurePanel = null;
+    }
+
+    private void CloseFeaturePanel()
+    {
+        if (_featurePanel is null) return;
+        var window = _featurePanel;
+        _featurePanel = null;
+        window.Closed -= OnFeaturePanelClosed;
+        RestorePanelFromFeatureWindow(window);
+        window.Close();
+    }
+
+    private void RestorePanelFromFeatureWindow(FeaturePanelWindow window)
+    {
+        foreach (var element in window.HeaderStackPanel.Children.Cast<UIElement>().ToList())
+        {
+            window.HeaderStackPanel.Children.Remove(element);
+            PanelHeaderHost.Children.Add(element);
+        }
+
+        foreach (var element in window.ButtonHostPanel.Children.Cast<UIElement>().ToList())
+        {
+            window.ButtonHostPanel.Children.Remove(element);
+            ResetButtonHostMargin(element);
+            PanelButtonHost.Children.Add(element);
+        }
+
+        if (window.ExtraHostBorder.Child is UIElement extra)
+        {
+            window.ExtraHostBorder.Child = null;
+            window.ExtraHostBorder.Visibility = Visibility.Collapsed;
+            if (ReferenceEquals(extra, PanelBody))
+            {
+                if (!PanelChromeHost.Children.Contains(PanelBody))
+                {
+                    PanelChromeHost.Children.Add(PanelBody);
+                }
+            }
+            else if (!DetailContentHost.Children.Contains(extra))
+            {
+                DetailContentHost.Children.Insert(0, extra);
+            }
+        }
+
+        foreach (var element in window.ContentHostPanel.Children.Cast<UIElement>().ToList())
+        {
+            window.ContentHostPanel.Children.Remove(element);
+            if (!DetailContentHost.Children.Contains(element))
+            {
+                DetailContentHost.Children.Add(element);
+            }
+        }
+
+        RestoreDetailContentOrder();
+    }
+
+    private void RestoreDetailContentOrder()
+    {
+        UIElement[] order =
+        [
+            PerfDetailPanel, OptionsPanel, SpeedInputPanel, NetworkNotePanel, UsbFormatPanel,
+            PanelProgressBar, PanelProgressText, DetailGrid
+        ];
+        foreach (var element in order)
+        {
+            if (DetailContentHost.Children.Contains(element))
+            {
+                DetailContentHost.Children.Remove(element);
+                DetailContentHost.Children.Add(element);
+            }
+        }
+    }
+
+    private void ResetButtonHostMargin(UIElement element)
+    {
+        if (element is not FrameworkElement fe) return;
+        if (ReferenceEquals(element, PrimaryAction))
+        {
+            fe.Margin = new Thickness(0);
+        }
+        else if (element is ComboBox)
+        {
+            fe.Margin = new Thickness(0, 0, 10, 0);
+        }
+        else if (element is Button)
+        {
+            fe.Margin = new Thickness(10, 0, 0, 0);
+        }
+        else
+        {
+            fe.Margin = new Thickness(0);
+        }
+    }
+
+    private static string AutostartKey(AutostartEntry entry) =>
+        $"{entry.Name}|{entry.Command}|{entry.Location}";
+
+    private void ShowSpeedOptions(bool includeLaptopPower)
+    {
+        OptionsPanel.Visibility = Visibility.Visible;
+        OptionsPanel.Children.Clear();
+        _optionChecks.Clear();
+        _itemChecks.Clear();
+
+        AddOptionHeader("Energieplan");
+        foreach (var option in SpeedService.BuildOptions(includeLaptopPower))
+        {
+            if (!option.Id.StartsWith("plan-", StringComparison.OrdinalIgnoreCase)) continue;
+            AddOptionCheckbox(option.Id, option.Label, option.Hint, option.Default);
+        }
+
+        if (includeLaptopPower)
+        {
+            if (LaptopPowerService.HasBattery())
+            {
+                AddOptionHeader("Akku — Lademodus");
+                AddCurrentSettingNote(LaptopPowerService.FormatCurrentChargingHint());
+                foreach (var option in LaptopPowerService.ChargingOptions)
+                {
+                    var hint = option.Id == LaptopPowerService.GetCurrentChargingModeId()
+                        ? option.Hint + " ← aktiv"
+                        : option.Hint;
+                    AddOptionCheckbox(option.Id, option.Label, hint, false);
+                }
+            }
+
+            AddOptionHeader("Kühlprofil");
+            AddCurrentSettingNote(LaptopPowerService.FormatCurrentThermalHint());
+            if (LaptopPowerService.FormatWindowsPowerHint() is { Length: > 0 } powerHint)
+            {
+                AddCurrentSettingNote(powerHint);
+            }
+
+            foreach (var option in LaptopPowerService.ThermalOptions)
+            {
+                var hint = option.Id == LaptopPowerService.GetCurrentThermalModeId()
+                    ? option.Hint + " ← aktiv"
+                    : option.Hint;
+                AddOptionCheckbox(option.Id, option.Label, hint, false);
+            }
+        }
+
+        AddOptionHeader("Sonstiges");
+        foreach (var option in SpeedService.MiscOptions)
+        {
+            AddOptionCheckbox(option.Id, option.Label, option.Hint, option.Default);
+        }
+    }
+
+    private void AddOptionHeader(string text)
+    {
+        OptionsPanel.Children.Add(new TextBlock
+        {
+            Text = text,
+            FontFamily = new System.Windows.Media.FontFamily("Bahnschrift"),
+            FontSize = 15,
+            FontWeight = FontWeights.SemiBold,
+            Margin = new Thickness(0, 10, 0, 8),
+            Foreground = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0x18, 0x24, 0x1F))
+        });
+    }
+
+    private void AddCurrentSettingNote(string text)
+    {
+        OptionsPanel.Children.Add(new TextBlock
+        {
+            Text = text,
+            FontSize = 14,
+            Foreground = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0x2F, 0x6A, 0x4A)),
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 0, 0, 8)
+        });
+    }
+
+    private void AddOptionCheckbox(string id, string label, string hint, bool defaultChecked)
+    {
+        var cb = new CheckBox
+        {
+            IsChecked = defaultChecked,
+            Tag = id,
+            FontSize = 15
+        };
+        _optionChecks[id] = cb;
+        OptionsPanel.Children.Add(BuildOptionRow(label, hint, null, cb));
+    }
+
+
+    private async Task RefreshAutostartListAsync()
+    {
+        ShowPanelProgress("Autostart wird geladen …");
+        PanelBody.Text = "Autostart-Einträge und Symbole werden gelesen …";
+        PrimaryAction.IsEnabled = false;
+        try
+        {
+            var items = await Task.Run(() => _autostart.ListEntries());
+            var iconPairs = await Task.WhenAll(items.Select(item => Task.Run(() =>
+                (Item: item, Icon: AppIconHelper.LoadSafe(item.IconSource)))));
+
+            var checkItems = iconPairs.Select(pair =>
+            (
+                AutostartKey(pair.Item),
+                $"{pair.Item.Name} — {pair.Item.Description}",
+                $"{pair.Item.Location} · {(pair.Item.Enabled ? "Aktiv" : "Deaktiviert")}",
+                false,
+                (object)pair.Item,
+                pair.Icon
+            )).ToList();
+
+            _autostartItems = items;
+            ShowItemCheckboxes(checkItems);
+            PanelBody.Text = _autostartItems.Count == 0
+                ? "Keine Autostart-Einträge gefunden."
+                : $"{_autostartItems.Count} Einträge — per Checkbox auswählen, dann deaktivieren oder aktivieren.";
+        }
+        catch (Exception ex)
+        {
+            PanelBody.Text = UserFriendlyErrors.Translate(ex);
+        }
+        finally
+        {
+            HidePanelProgress();
+            PrimaryAction.IsEnabled = true;
+        }
+    }
+
+    private void RefreshAutostartList() => _ = RefreshAutostartListAsync();
+
+    private void AddAutostartProgram()
+    {
+        var dialog = new OpenFileDialog
+        {
+            Title = "Programm zum Autostart hinzufügen",
+            Filter = "Programme (*.exe)|*.exe|Alle Dateien (*.*)|*.*",
+            CheckFileExists = true
+        };
+        if (dialog.ShowDialog(this) != true) return;
+
+        var startup = Environment.GetFolderPath(Environment.SpecialFolder.Startup);
+        var linkName = Path.GetFileNameWithoutExtension(dialog.FileName) + ".lnk";
+        var target = Path.Combine(startup, linkName);
+        try
+        {
+            var script =
+                "$ws = New-Object -ComObject WScript.Shell; " +
+                $"$s = $ws.CreateShortcut('{target.Replace("'", "''")}'); " +
+                $"$s.TargetPath = '{dialog.FileName.Replace("'", "''")}'; " +
+                $"$s.WorkingDirectory = '{Path.GetDirectoryName(dialog.FileName)?.Replace("'", "''") ?? ""}'; " +
+                "$s.Save()";
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = "powershell.exe",
+                Arguments = $"-NoProfile -Command \"{script}\"",
+                UseShellExecute = false,
+                CreateNoWindow = true
+            })?.WaitForExit(8000);
+            PanelBody.Text = $"Verknüpfung im Autostart-Ordner angelegt: {linkName}";
+            RefreshAutostartList();
+        }
+        catch (Exception ex)
+        {
+            PanelBody.Text = UserFriendlyErrors.Translate(ex);
+        }
     }
 
     private void OnFilterChanged(object sender, SelectionChangedEventArgs e)
     {
         if (_filterUpdating || _mode != "ai") return;
         _aiFilter = FilterBox.SelectedItem is ComboBoxItem item && item.Tag is string tag ? tag : "all";
-        var perf = _performance.Capture();
-        ShowAiPanel(_ai.Capture(_aiFilter, perf.CpuPercent, perf.RamTotalBytes), refreshApps: false);
+        _ = ShowAiPanelAsync(refreshApps: false);
+    }
+
+    private void OnTertiaryAction(object sender, RoutedEventArgs e)
+    {
+        if (_mode == "perf")
+        {
+            _ = InstallPawnIoAsync();
+            return;
+        }
+
+        if (_mode == "backup")
+        {
+            SystemBackupService.OpenSystemProtectionSettings();
+            return;
+        }
+
+        if (_mode == "usb")
+        {
+            _ = DownloadRecommendedWindowsIsoAsync();
+            return;
+        }
+
+        if (_mode == "autostart")
+        {
+            AddAutostartProgram();
+        }
+        else if (_mode == "software-updates")
+        {
+            foreach (var cb in _itemChecks.Values)
+            {
+                cb.IsChecked = true;
+            }
+        }
+        else if (_mode == "keys")
+        {
+            ExportKeysHtml();
+        }
+    }
+
+    private async Task InstallPawnIoAsync()
+    {
+        if (PawnIoInstallService.IsInstalled)
+        {
+            MessageBox.Show(this,
+                "PawnIO ist bereits installiert.\n\nBitte KlarWin schließen und neu starten, damit CPU/Mainboard-Sensoren gelesen werden können.",
+                "KlarWin — PawnIO",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+            return;
+        }
+
+        var answer = MessageBox.Show(this,
+            "PawnIO ist ein kostenloser Hardware-Treiber für CPU- und Mainboard-Temperaturen.\n\n" +
+            "KlarWin startet die Installation (winget oder offizieller Installer von GitHub). " +
+            "Windows fragt nach Administratorrechten.\n\n" +
+            "Fortfahren?",
+            "KlarWin — PawnIO installieren",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Question);
+        if (answer != MessageBoxResult.Yes)
+        {
+            return;
+        }
+
+        SecondaryAction.IsEnabled = false;
+        TertiaryAction.IsEnabled = false;
+        ShowPanelProgress("PawnIO wird installiert …");
+
+        try
+        {
+            var progress = new Progress<string>(text => PanelProgressText.Text = text);
+            var (success, message) = await PawnIoInstallService.InstallAsync(progress);
+            HidePanelProgress();
+            MessageBox.Show(this, message, "KlarWin — PawnIO", MessageBoxButton.OK,
+                success ? MessageBoxImage.Information : MessageBoxImage.Warning);
+
+            if (success && !PawnIoInstallService.IsInstalled)
+            {
+                TertiaryAction.Content = "PawnIO installieren";
+                TertiaryAction.Visibility = Visibility.Visible;
+            }
+            else if (PawnIoInstallService.IsInstalled)
+            {
+                TertiaryAction.Visibility = Visibility.Collapsed;
+            }
+
+            if (_mode == "perf" && _perfDiagVisible && _detailTempDiagBlock is not null)
+            {
+                var probes = TemperatureDiagnosticsService.ProbeAll(_performanceMonitor.HardwareTemperatureReader);
+                _detailTempDiagBlock.Text = TemperatureDiagnosticsService.FormatReport(
+                    probes, ShortcutOverlayService.IsAdministrator());
+            }
+            else if (_mode == "perf")
+            {
+                UpdatePerfDetailCharts(_performanceMonitor.Sample());
+            }
+        }
+        catch (Exception ex)
+        {
+            HidePanelProgress();
+            MessageBox.Show(this, UserFriendlyErrors.Translate(ex), "KlarWin — PawnIO",
+                MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+        finally
+        {
+            SecondaryAction.IsEnabled = true;
+            TertiaryAction.IsEnabled = true;
+        }
+    }
+
+    private UsbDriveInfo? GetSelectedUsbDrive()
+    {
+        return UsbDriveBox.SelectedItem is ComboBoxItem item && item.Tag is UsbDriveInfo drive
+            ? drive
+            : null;
+    }
+
+    private void OnUsbDriveSelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_mode != "usb") return;
+        var drive = GetSelectedUsbDrive();
+        if (drive is null) return;
+        ShowUsbDriveDetails(drive);
+        RefreshUsbFileList(drive);
     }
 
     private async void OnPrimaryAction(object sender, RoutedEventArgs e)
@@ -319,19 +2087,141 @@ public partial class MainWindow : Window
             case "keys":
                 ExportKeys();
                 break;
+            case "software-updates":
+                await InstallSoftwareUpdatesAsync();
+                break;
             case "network":
                 await ForceNetworkRefreshAsync();
                 break;
             case "update":
                 await ApplyUpdateAsync();
                 break;
+            case "backup":
+                ApplyRestorePoint();
+                break;
+            case "usb":
+                ApplyUsbFormat();
+                break;
         }
+    }
+
+    private void ApplyUsbFormat()
+    {
+        var drive = GetSelectedUsbDrive();
+        if (drive is null)
+        {
+            PanelBody.Text = "Bitte zuerst ein Wechselmedium in der Liste auswählen.";
+            return;
+        }
+
+        if (!drive.IsReady)
+        {
+            PanelBody.Text = $"Laufwerk {drive.Letter}: ist nicht bereit. Stick einstecken und „Liste aktualisieren“ wählen.";
+            return;
+        }
+
+        var fileSystem = UsbFileSystemBox.SelectedItem is ComboBoxItem fsItem && fsItem.Tag is string fs
+            ? fs
+            : "NTFS";
+
+        var sizeText = drive.TotalBytes > 0
+            ? ByteSizeFormatter.Format(drive.TotalBytes, ByteSizeKind.Disk)
+            : "unbekannte Größe";
+        var answer = MessageBox.Show(
+            this,
+            $"Laufwerk {drive.Letter}: ({drive.FileSystem}, {sizeText}) wird komplett gelöscht und als {fileSystem} neu formatiert.\n\n" +
+            "Alle Dateien auf dem Stick gehen verloren. Fortfahren?",
+            "KlarWin — USB-Stick formatieren",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Warning);
+        if (answer != MessageBoxResult.Yes)
+        {
+            return;
+        }
+
+        var (success, message) = UsbStickService.FormatDrive(drive.Letter, fileSystem);
+        PanelBody.Text = message;
+        RefreshUsbDriveList();
+        if (!success && message.Contains("Administrator", StringComparison.OrdinalIgnoreCase))
+        {
+            PromptAdminElevation("Zum Formatieren eines USB-Sticks sind Administratorrechte nötig.\n\nJetzt neu starten und UAC bestätigen?");
+        }
+    }
+
+    private void RefreshUsbDriveList()
+    {
+        var drives = UsbStickService.ListRemovableDrives();
+        UsbDriveBox.Items.Clear();
+        if (drives.Count == 0)
+        {
+            DetailGrid.Visibility = Visibility.Collapsed;
+            PanelBody.Text =
+                "Kein Wechselmedium erkannt (USB-Stick, SD-Karte …). Medium einstecken und „Liste aktualisieren“ wählen.\n\n" +
+                "Hinweis: ext4/Linux-Medien erscheinen oft als „RAW / unbekannt“ — Formatierung legt ein Windows-Dateisystem an.";
+            return;
+        }
+
+        foreach (var drive in drives)
+        {
+            var size = drive.TotalBytes > 0
+                ? ByteSizeFormatter.Format(drive.TotalBytes, ByteSizeKind.Disk)
+                : "—";
+            var label = string.IsNullOrWhiteSpace(drive.Label) ? "" : $" · {drive.Label}";
+            var content = drive.IsReady
+                ? $"{drive.Letter}: Wechselmedium{label} · {drive.FileSystem} · {size}"
+                : $"{drive.Letter}: Wechselmedium — nicht bereit";
+            UsbDriveBox.Items.Add(new ComboBoxItem { Content = content, Tag = drive });
+        }
+
+        UsbDriveBox.SelectedIndex = 0;
+    }
+
+    private void RefreshUsbFileList(UsbDriveInfo drive)
+    {
+        if (!drive.IsReady)
+        {
+            DetailGrid.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        DetailGrid.Visibility = Visibility.Visible;
+        SetDetailGridColumns("Name", "Typ", "Größe", 240, 120, 140);
+        var entries = UsbStickService.ListRootEntries(drive.Letter);
+        if (entries.Count == 0)
+        {
+            ShowDetailRows([
+                new DetailRow { Col1 = "(leer)", Col2 = "—", Col3 = "—" }
+            ]);
+            return;
+        }
+
+        ShowDetailRows(entries.Select(entry => new DetailRow
+        {
+            Col1 = entry.IsDirectory ? $"📁 {entry.Name}" : entry.Name,
+            Col2 = entry.IsDirectory ? "Ordner" : "Datei",
+            Col3 = entry.IsDirectory ? "—" : ByteSizeFormatter.Format(entry.SizeBytes, ByteSizeKind.Disk)
+        }));
+    }
+
+    private void ShowUsbDriveDetails(UsbDriveInfo drive)
+    {
+        var intro =
+            "Wechselmedium für Windows vorbereiten — z. B. SD-Karte oder USB-Stick, der unter Linux (ext4) formatiert ist.\n\n" +
+            "Medium oben wählen, Dateisystem wählen, dann formatieren. Alle Daten auf dem Medium werden gelöscht.\n\n";
+
+        var summary = UsbStickService.FormatDriveSummary(drive);
+        PanelBody.Text = drive.IsReady
+            ? intro + summary
+            : intro + summary + "\n\nMedium einstecken und „Liste aktualisieren“ wählen.";
     }
 
     private void OnSecondaryAction(object sender, RoutedEventArgs e)
     {
         switch (_mode)
         {
+            case "perf":
+                ShowTemperatureDiagnostics();
+                break;
             case "clean":
                 _ = ShowCleanupPreviewAsync();
                 break;
@@ -339,11 +2229,10 @@ public partial class MainWindow : Window
                 ApplyOverlay(hide: false);
                 break;
             case "autostart":
-                _autostart.OpenTaskManagerStartup();
+                EnableSelectedAutostart();
                 break;
             case "wipe":
-                _wipeCts?.Cancel();
-                PanelBody.Text = "Abbruch angefordert …";
+                _ = PickAndSecureDeleteAsync();
                 break;
             case "recover":
                 RefreshRecoverList();
@@ -351,12 +2240,88 @@ public partial class MainWindow : Window
             case "keys":
                 RefreshKeyList();
                 break;
+            case "software-updates":
+                _ = RefreshSoftwareUpdatesAsync(invalidateCache: true);
+                break;
             case "network":
                 _network.OpenRouterPage();
                 break;
             case "update":
                 _ = CheckUpdateAsync(applyPrompt: false);
                 break;
+            case "backup":
+                _ = DownloadRecommendedWindowsIsoAsync();
+                break;
+            case "usb":
+                RefreshUsbDriveList();
+                break;
+        }
+    }
+
+    private string BuildIsoAwareBody(string prefix)
+    {
+        _windowsIsoRecommendation = WindowsIsoRecommendationService.Build(WindowsPcProfileService.Read());
+        return prefix + "\n\n" + WindowsIsoRecommendationService.FormatPanelText(_windowsIsoRecommendation);
+    }
+
+    private async Task DownloadRecommendedWindowsIsoAsync()
+    {
+        _windowsIsoRecommendation = WindowsIsoRecommendationService.Build(WindowsPcProfileService.Read());
+        PrimaryAction.IsEnabled = false;
+        SecondaryAction.IsEnabled = false;
+        TertiaryAction.IsEnabled = false;
+        ShowPanelProgress("ISO wird vorbereitet …");
+
+        var progress = new Progress<string>(text =>
+        {
+            PanelProgressText.Text = text;
+            PanelProgressText.Visibility = Visibility.Visible;
+        });
+
+        try
+        {
+            var (success, message, path) = await WindowsIsoDownloadService.DownloadIsoAsync(
+                _windowsIsoRecommendation, progress);
+
+            PanelBody.Text = BuildIsoAwareBody(
+                success ? "Download abgeschlossen." : "Download fehlgeschlagen.") + "\n\n" + message;
+
+            if (success && !string.IsNullOrWhiteSpace(path))
+            {
+                try
+                {
+                    Process.Start(new ProcessStartInfo("explorer.exe", $"/select,\"{path}\"")
+                    {
+                        UseShellExecute = true
+                    });
+                }
+                catch
+                {
+                    // optional
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            PanelBody.Text = BuildIsoAwareBody("Download fehlgeschlagen.") + "\n\n" +
+                             UserFriendlyErrors.Translate(ex);
+        }
+        finally
+        {
+            HidePanelProgress();
+            PrimaryAction.IsEnabled = true;
+            SecondaryAction.IsEnabled = true;
+            TertiaryAction.IsEnabled = true;
+        }
+    }
+
+    private void ApplyRestorePoint()
+    {
+        var (success, message) = SystemBackupService.CreateRestorePoint($"KlarWin {UpdateService.CurrentVersion}");
+        PanelBody.Text = message;
+        if (!success && message.Contains("Administrator", StringComparison.OrdinalIgnoreCase))
+        {
+            PromptAdminElevation("Für einen Wiederherstellungspunkt sind Administratorrechte nötig.\n\nJetzt neu starten und UAC bestätigen?");
         }
     }
 
@@ -364,31 +2329,123 @@ public partial class MainWindow : Window
     {
         PanelBody.Text = "Vorschau wird berechnet …";
         var preview = await Task.Run(() => _cleanup.Preview());
+        _cleanupPreview = preview;
+        ShowOptions(preview.Items.Select(i => (
+            i.Id,
+            $"{i.Label}: {ByteSizeFormatter.Format(i.Bytes, ByteSizeKind.FolderCleanup)} ({i.Files} {(i.Id == "recycle-bin" ? "Elemente" : "Dateien")})",
+            i.Hint,
+            i.DefaultSelected)));
+
         if (preview.Items.Count == 0)
         {
             PanelBody.Text = "Kaum etwas zum Aufräumen gefunden.";
             return;
         }
 
-        var lines = string.Join(" · ", preview.Items.Select(i => $"{i.Label}: {CleanupService.FormatBytes(i.Bytes)}"));
-        PanelBody.Text = $"Vorschau: {lines}. Gesamt ca. {CleanupService.FormatBytes(preview.TotalBytes)} ({preview.TotalFiles} Dateien). Papierkorb kommt beim Bereinigen dazu.";
+        var recycle = preview.Items.FirstOrDefault(i => i.Id == "recycle-bin");
+        var recycleNote = recycle is { Bytes: 0 }
+            ? " Papierkorb ist leer — in Windows-Eigenschaften sehen Sie die reservierte Maximalgröße (z. B. 49 GB auf C:), nicht den aktuellen Inhalt."
+            : " Papierkorb ist standardmäßig aktiviert — abwählen, wenn er erhalten bleiben soll.";
+        PanelBody.Text = $"Gesamt ca. {ByteSizeFormatter.Format(preview.TotalBytes, ByteSizeKind.FolderCleanup)} in {preview.TotalFiles} Dateien.{recycleNote}";
     }
 
     private async Task RunCleanup()
     {
+        var ids = SelectedOptionIds().ToList();
+        if (ids.Count == 0)
+        {
+            PanelBody.Text = "Bitte mindestens eine Kategorie auswählen.";
+            return;
+        }
+
+        var selection = CleanupSelection.FromIds(ids);
+        var summary = string.Join(", ", ids);
+        var confirm = MessageBox.Show(
+            this,
+            $"Wirklich löschen?\n\n{summary}\n\nDateien in Benutzung werden übersprungen.",
+            "KlarWin — Bereinigen",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Warning);
+        if (confirm != MessageBoxResult.Yes) return;
+
         PrimaryAction.IsEnabled = false;
         PanelBody.Text = "Aufräumen läuft …";
         var progress = new Progress<string>(text => PanelBody.Text = text);
-        var result = await Task.Run(() => _cleanup.CleanNow(progress));
+        var result = await Task.Run(() => _cleanup.CleanNow(selection, progress));
         var extra = result.Notes.Count > 0 ? " " + string.Join(" ", result.Notes) : "";
-        PanelBody.Text = $"{result.FilesRemoved} Dateien entfernt, {CleanupService.FormatBytes(result.BytesRemoved)} frei.{extra}";
+        PanelBody.Text = $"{result.FilesRemoved} Dateien entfernt, {ByteSizeFormatter.Format(result.BytesRemoved)} frei.{extra}";
         PrimaryAction.IsEnabled = true;
+        _ = ShowCleanupPreviewAsync();
     }
 
     private void RunSpeed()
     {
-        var result = _speed.Apply();
-        PanelBody.Text = string.Join(" ", result.Notes);
+        var ids = SelectedOptionIds().ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (ids.Count == 0)
+        {
+            PanelBody.Text = "Bitte mindestens eine Option auswählen.";
+            return;
+        }
+
+        var planGuids = ids.Where(id => id.StartsWith("plan-", StringComparison.OrdinalIgnoreCase)).ToList();
+        if (planGuids.Count > 1)
+        {
+            PanelBody.Text = "Bitte nur einen Energieplan auswählen.";
+            return;
+        }
+
+        var dellCharge = ids.Where(id => id.StartsWith("dell-charge-", StringComparison.OrdinalIgnoreCase)).ToList();
+        if (dellCharge.Count > 1)
+        {
+            PanelBody.Text = "Bitte nur einen Lademodus auswählen.";
+            return;
+        }
+
+        var dellThermal = ids.Where(id => id.StartsWith("dell-thermal-", StringComparison.OrdinalIgnoreCase)).ToList();
+        if (dellThermal.Count > 1)
+        {
+            PanelBody.Text = "Bitte nur ein Kühlprofil auswählen.";
+            return;
+        }
+
+        int? acMinutes = ParseTimeoutMinutes(ScreenTimeoutAcBox.Text);
+        int? dcMinutes = ParseTimeoutMinutes(ScreenTimeoutDcBox.Text);
+        if (!string.IsNullOrWhiteSpace(ScreenTimeoutAcBox.Text) && acMinutes is null)
+        {
+            PanelBody.Text = "Bitte für „Am Netzteil“ eine Zahl von 0 bis 1440 Minuten eintragen (0 = nie aus).";
+            return;
+        }
+
+        if (!string.IsNullOrWhiteSpace(ScreenTimeoutDcBox.Text) && dcMinutes is null)
+        {
+            PanelBody.Text = "Bitte für „Am Akku“ eine Zahl von 0 bis 1440 Minuten eintragen (0 = nie aus).";
+            return;
+        }
+
+        var options = new SpeedOptions
+        {
+            PowerPlanGuid = planGuids.Count == 1 ? planGuids[0]["plan-".Length..] : null,
+            ScreenAcAlwaysOn = ids.Contains("screen-ac-never"),
+            ScreenTimeoutAcMinutes = acMinutes,
+            ScreenTimeoutDcMinutes = dcMinutes,
+            FlushDns = ids.Contains("dns"),
+            ReduceAllAnimations = ids.Contains("fx-all"),
+            DisableWindowAnimations = ids.Contains("fx-window"),
+            DisableTaskbarAnimations = ids.Contains("fx-taskbar"),
+            DisablePeek = ids.Contains("fx-peek"),
+            DellChargingModes = dellCharge,
+            DellThermalModes = dellThermal
+        };
+        var result = _speed.Apply(options);
+        PanelBody.Text = string.Join("\n", result.Notes);
+    }
+
+    private static int? ParseTimeoutMinutes(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return null;
+        return int.TryParse(text.Trim(), out var minutes) && minutes >= 0 && minutes <= 1440
+            ? minutes
+            : null;
     }
 
     private void ApplyOverlay(bool hide)
@@ -396,48 +2453,74 @@ public partial class MainWindow : Window
         var result = hide ? _overlay.HideArrows() : _overlay.RestoreArrows();
         if (result.NeedsAdmin && !ShortcutOverlayService.IsAdministrator())
         {
-            var answer = MessageBox.Show(
-                this,
-                "KlarWin muss einmal als Administrator starten, um die Desktop-Pfeile zu ändern. Jetzt neu starten?",
-                "KlarWin",
-                MessageBoxButton.YesNo,
-                MessageBoxImage.Question);
-            if (answer == MessageBoxResult.Yes)
-            {
-                Elevation.RelaunchAsAdministrator();
-            }
+            PromptAdminElevation(
+                "Für die Desktop-Pfeile sind Administratorrechte nötig.\n\nJetzt neu starten und UAC bestätigen?");
             return;
         }
 
-        PanelBody.Text = result.Message;
+        if (result.Success)
+        {
+            _settings.HideShortcutArrows = hide;
+            _settings.Save();
+        }
+
+        var detail = result.AppliedValue is not null ? $"\nGesetzt: {result.AppliedValue}" : "";
+        PanelBody.Text = result.Message + detail + (hide
+            ? "\n\nKlarWin merkt sich die Einstellung (beim Start erneut anwenden, wenn als Admin gestartet)."
+            : "");
+        OnOverlayClick(this, new RoutedEventArgs());
     }
 
     private void DisableSelectedAutostart()
     {
-        if (DetailList.SelectedIndex < 0 || DetailList.SelectedIndex >= _autostartItems.Count)
+        var entries = CheckedItemTags<AutostartEntry>().Where(e => e.Enabled).ToList();
+        if (entries.Count == 0)
         {
-            PanelBody.Text = "Bitte einen Eintrag in der Liste markieren.";
+            PanelBody.Text = "Bitte mindestens einen aktiven Eintrag auswählen.";
             return;
         }
 
-        var entry = _autostartItems[DetailList.SelectedIndex];
         var confirm = MessageBox.Show(
             this,
-            $"„{entry.Name}“ wirklich aus dem Autostart nehmen?",
+            $"{entries.Count} Programm(e) wirklich aus dem Autostart nehmen?",
             "KlarWin",
             MessageBoxButton.YesNo,
             MessageBoxImage.Question);
         if (confirm != MessageBoxResult.Yes) return;
 
-        try
+        var notes = new List<string>();
+        foreach (var entry in entries)
         {
-            PanelBody.Text = _autostart.Disable(entry);
-            OnAutostartClick(this, new RoutedEventArgs());
+            try
+            {
+                notes.Add(_autostart.Disable(entry));
+            }
+            catch (Exception ex)
+            {
+                notes.Add($"{entry.Name}: {UserFriendlyErrors.Translate(ex)}");
+            }
         }
-        catch (Exception ex)
+
+        PanelBody.Text = string.Join("\n", notes);
+        RefreshAutostartList();
+    }
+
+    private void EnableSelectedAutostart()
+    {
+        var entries = CheckedItemTags<AutostartEntry>().ToList();
+        if (entries.Count == 0)
         {
-            PanelBody.Text = $"Fehler: {ex.Message}. Bei System-Einträgen als Administrator starten.";
+            PanelBody.Text = "Bitte mindestens einen Eintrag auswählen.";
+            return;
         }
+
+        var notes = entries.Select(entry =>
+        {
+            try { return _autostart.Enable(entry); }
+            catch (Exception ex) { return $"{entry.Name}: {UserFriendlyErrors.Translate(ex)}"; }
+        });
+        PanelBody.Text = string.Join("\n", notes);
+        RefreshAutostartList();
     }
 
     private async Task RunWipe()
@@ -454,10 +2537,14 @@ public partial class MainWindow : Window
         var confirm = MessageBox.Show(
             this,
             $"Freier Speicher auf {root} wird mit „{modeLabel}“ überschrieben.\n\n" +
-            "Vorhandene Dateien und Programme bleiben.\n" +
-            "Nur bereits gelöschte Reste im freien Speicher werden unbrauchbar.\n\n" +
-            "Das kann lange dauern. Fortfahren?",
-            "KlarWin — Überschreiben",
+            "Das ist Aktion ② — nicht das Löschen einzelner Dateien.\n" +
+            "Vorhandene Dateien und Programme bleiben unberührt.\n" +
+            "Nur bereits gelöschte Reste im leeren Speicher werden unbrauchbar." +
+            (PanelTitle.Text.Contains("sicher gelöscht", StringComparison.OrdinalIgnoreCase)
+                ? "\n\nHinweis: Die soeben gelöschte Datei ist davon nicht betroffen."
+                : "") +
+            "\n\nDas kann lange dauern. Fortfahren?",
+            "Freien Speicher überschreiben — nicht einzelne Dateien",
             MessageBoxButton.YesNo,
             MessageBoxImage.Warning);
         if (confirm != MessageBoxResult.Yes) return;
@@ -484,7 +2571,49 @@ public partial class MainWindow : Window
         var progress = new Progress<string>(text => PanelBody.Text = text);
         var token = _wipeCts.Token;
         var result = await Task.Run(() => _wipe.WipeFreeSpace(root, mode, progress, token), token);
-        PanelBody.Text = result.Message;
+        PanelTitle.Text = "Freier Speicher überschrieben";
+        PanelBody.Text = "② " + result.Message + "\n\n① Zum Löschen einzelner Dateien „Datei/Ordner sicher löschen …“ verwenden.";
+        PrimaryAction.IsEnabled = true;
+    }
+
+    private async Task PickAndSecureDeleteAsync()
+    {
+        var choice = MessageBox.Show(
+            this,
+            "Datei löschen (Datei wählen) oder Ordner löschen?",
+            "KlarWin",
+            MessageBoxButton.YesNoCancel,
+            MessageBoxImage.Question);
+        if (choice == MessageBoxResult.Cancel) return;
+
+        string? target = null;
+        if (choice == MessageBoxResult.Yes)
+        {
+            var dialog = new OpenFileDialog { Title = "Datei zum sicheren Löschen wählen", CheckFileExists = true };
+            if (dialog.ShowDialog(this) != true) return;
+            target = dialog.FileName;
+        }
+        else
+        {
+            var folder = new OpenFolderDialog { Title = "Ordner zum sicheren Löschen wählen" };
+            if (folder.ShowDialog(this) != true) return;
+            target = folder.FolderName;
+        }
+
+        var confirm = MessageBox.Show(
+            this,
+            $"„{Path.GetFileName(target.TrimEnd('\\'))}“ unwiederbringlich löschen?\n\nDer Inhalt wird überschrieben.",
+            "KlarWin — Sicher löschen",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Warning);
+        if (confirm != MessageBoxResult.Yes) return;
+
+        PrimaryAction.IsEnabled = false;
+        var mode = SelectedWipeMode();
+        var progress = new Progress<string>(text => PanelBody.Text = text);
+        var result = await Task.Run(() => _wipe.SecureDeletePath(target, mode, progress));
+        PanelTitle.Text = "Datei/Ordner sicher gelöscht";
+        PanelBody.Text = "① " + result.Message + "\n\n② Freien Speicher überschreiben betrifft nur den leeren Bereich auf der Festplatte — nicht einzelne Dateien.";
         PrimaryAction.IsEnabled = true;
     }
 
@@ -503,48 +2632,120 @@ public partial class MainWindow : Window
         return WipeMode.ZeroFill;
     }
 
-    private void RefreshRecoverList()
+    private async void RefreshRecoverList()
     {
-        _recoverItems = _recovery.ListRecycleBin();
-        DetailList.Items.Clear();
-        foreach (var item in _recoverItems)
+        PanelBody.Text = "Liste wird geladen …";
+        var deep = _itemChecks.TryGetValue("deep-usn", out var deepCb) && deepCb.IsChecked == true;
+        _recoverItems = await Task.Run(() =>
         {
-            var size = item.SizeBytes > 0 ? CleanupService.FormatBytes(item.SizeBytes) : "Ordner";
-            DetailList.Items.Add($"{item.DisplayName}  ·  {size}  ·  {item.DeletedAt:dd.MM.yyyy HH:mm}");
+            var list = _recovery.ListRecycleBin().ToList();
+            if (deep)
+            {
+                foreach (var hint in _recovery.ScanUsnDeletions())
+                {
+                    if (list.Any(i => i.OriginalPath.Equals(hint.OriginalPath, StringComparison.OrdinalIgnoreCase))) continue;
+                    list.Add(hint);
+                }
+            }
+
+            return (IReadOnlyList<RecoverableItem>)list.OrderByDescending(i => i.DeletedAt).ToList();
+        });
+
+        var checkItems = new List<(string Id, string Label, string Hint, bool Default, object Tag, ImageSource? Icon)>
+        {
+            ("deep-usn", "NTFS-Protokoll durchsuchen (optional)", "Kürzlich endgültig gelöschte Dateien — nur Hinweis, nicht wiederherstellbar", deep, "deep-usn", null)
+        };
+        foreach (var item in _recoverItems.Where(i => i.CanRestore))
+        {
+            var id = "item-" + item.RecyclePath + item.OriginalPath;
+            var label = $"{item.DisplayName} ({ByteSizeFormatter.Format(item.SizeBytes)})";
+            checkItems.Add((id, label, item.Source + " · " + item.DeletedAt.ToString("dd.MM.yyyy HH:mm"), false, item, null));
         }
 
-        PanelBody.Text = _recoverItems.Count == 0
-            ? "Papierkorb ist leer oder nicht lesbar. Endgültig gelöschte Dateien (Shift+Entf) braucht spezialisierte Forensik — das ist hier nicht drin."
-            : $"{_recoverItems.Count} Einträge im Papierkorb. Markieren und wiederherstellen.";
+        foreach (var item in _recoverItems.Where(i => !i.CanRestore))
+        {
+            var id = "hint-" + item.OriginalPath;
+            var label = $"{item.DisplayName} — nur Hinweis (nicht wiederherstellbar)";
+            checkItems.Add((id, label, item.Source + " · " + item.DeletedAt.ToString("dd.MM.yyyy HH:mm"), false, item, null));
+        }
+
+        ShowItemCheckboxes(checkItems);
+
+        if (_itemChecks.TryGetValue("deep-usn", out var deepToggle))
+        {
+            deepToggle.Checked -= OnRecoverDeepToggleChanged;
+            deepToggle.Unchecked -= OnRecoverDeepToggleChanged;
+            deepToggle.Checked += OnRecoverDeepToggleChanged;
+            deepToggle.Unchecked += OnRecoverDeepToggleChanged;
+        }
+
+        var restorable = _recoverItems.Count(i => i.CanRestore);
+        var hints = _recoverItems.Count - restorable;
+        if (_recoverItems.Count == 0)
+        {
+            PanelBody.Text = deep
+                ? "Papierkorb leer. NTFS-Protokoll durchsucht — keine passenden Einträge. Shift+Entf-Hinweise brauchen oft Administratorrechte."
+                : "Nichts gefunden. Papierkorb leer — optional NTFS-Protokoll aktivieren und Liste aktualisieren.";
+        }
+        else
+        {
+            PanelBody.Text = $"{restorable} aus Papierkorb wiederherstellbar" +
+                             (hints > 0 ? $", {hints} Hinweise aus NTFS-Protokoll (nur Anzeige, nicht wiederherstellbar)." : ".") +
+                             " — per Checkbox auswählen.";
+            if (deep && hints == 0)
+            {
+                PanelBody.Text += " NTFS-Protokoll: keine zusätzlichen Einträge gefunden.";
+            }
+        }
+    }
+
+    private void OnRecoverDeepToggleChanged(object sender, RoutedEventArgs e)
+    {
+        if (_mode == "recover")
+        {
+            RefreshRecoverList();
+        }
     }
 
     private void RestoreSelected()
     {
-        if (DetailList.SelectedIndex < 0 || DetailList.SelectedIndex >= _recoverItems.Count)
+        var items = CheckedItemTags<RecoverableItem>().Where(i => i.CanRestore).ToList();
+        if (items.Count == 0)
         {
-            PanelBody.Text = "Bitte eine Datei in der Liste markieren.";
+            PanelBody.Text = "Bitte mindestens eine wiederherstellbare Datei auswählen (Papierkorb-Einträge).";
             return;
         }
 
-        var item = _recoverItems[DetailList.SelectedIndex];
-        PanelBody.Text = _recovery.Restore(item);
+        var notes = items.Select(item => _recovery.Restore(item)).ToList();
+        PanelBody.Text = string.Join("\n", notes);
         RefreshRecoverList();
     }
 
-    private void RefreshKeyList()
+    private async Task RefreshKeyListAsync()
     {
-        _keyItems = _keys.Collect();
-        DetailList.Items.Clear();
-        foreach (var item in _keyItems)
+        PanelBody.Text = "Keys werden gelesen …";
+        try
         {
-            var masked = MaskKey(item.Key);
-            DetailList.Items.Add($"{item.Product}  ·  {masked}");
-        }
+            _keyItems = await Task.Run(() => _keys.Collect());
+            ShowDetailRows(_keyItems.Select(item => new DetailRow
+            {
+                Col1 = item.Product,
+                Col2 = item.Key,
+                Col3 = item.Kind,
+                Tag = item
+            }));
 
-        PanelBody.Text = _keyItems.Count == 0
-            ? "Keine Keys gefunden. Moderne Windows/Office-Lizenzen sind oft digital (Microsoft-Konto) und stehen nicht als klassischer Product Key in der Registry."
-            : $"{_keyItems.Count} Keys gefunden. „Als Datei speichern“ legt eine Sicherung unter Dokumente\\KlarWin ab.";
+            PanelBody.Text = _keyItems.Count == 0
+                ? "Keine Keys gefunden. Moderne Windows/Office-Lizenzen sind oft digital (Microsoft-Konto) und stehen nicht als klassischer Product Key in der Registry."
+                : $"{_keyItems.Count} Keys gefunden. Vollständige Liste — als Text oder HTML (druckbar) unter Dokumente\\KlarWin speichern.";
+        }
+        catch (Exception ex)
+        {
+            PanelBody.Text = UserFriendlyErrors.Translate(ex);
+        }
     }
+
+    private void RefreshKeyList() => _ = RefreshKeyListAsync();
 
     private void ExportKeys()
     {
@@ -570,8 +2771,55 @@ public partial class MainWindow : Window
         }
     }
 
+    private void ExportKeysHtml()
+    {
+        if (_keyItems.Count == 0)
+        {
+            RefreshKeyList();
+            if (_keyItems.Count == 0)
+            {
+                PanelBody.Text = "Nichts zu speichern.";
+                return;
+            }
+        }
+
+        var path = _keys.ExportPrintableHtml(_keyItems);
+        PanelBody.Text = $"Druckbare HTML-Liste: {path}\nDer Druckdialog wird geöffnet — dort Drucker oder „Als PDF speichern“ wählen.";
+        try
+        {
+            OpenHtmlPrintDialog(path);
+        }
+        catch (Exception ex)
+        {
+            PanelBody.Text += $"\n\nDruckdialog konnte nicht geöffnet werden: {UserFriendlyErrors.Translate(ex)}";
+        }
+    }
+
+    private static void OpenHtmlPrintDialog(string path)
+    {
+        var fullPath = Path.GetFullPath(path);
+        try
+        {
+            Process.Start(new ProcessStartInfo(fullPath) { Verb = "print", UseShellExecute = true });
+            return;
+        }
+        catch
+        {
+            // fallback below
+        }
+
+        var fileUri = new Uri(fullPath).AbsoluteUri;
+        Process.Start(new ProcessStartInfo
+        {
+            FileName = "rundll32.exe",
+            Arguments = $"mshtml.dll,PrintHTML \"{fileUri}\"",
+            UseShellExecute = true
+        });
+    }
+
     private static string MaskKey(string key)
     {
+        if (string.IsNullOrEmpty(key)) return "—";
         if (key.Length <= 8) return key;
         var visible = Math.Min(5, key.Length / 4);
         return key[..visible] + new string('•', Math.Min(12, key.Length - visible - 4)) + key[^4..];
@@ -579,22 +2827,31 @@ public partial class MainWindow : Window
 
     private async Task ForceNetworkRefreshAsync()
     {
-        PanelBody.Text = "Router wird abgefragt …";
-        await _network.PingGatewayAsync();
-        var snap = await _network.RefreshRouterAsync(includeHosts: true);
-        _lastRouterUtc = DateTime.UtcNow;
-        _lastHostsUtc = DateTime.UtcNow;
-        ApplyNetworkBars(snap);
-        ShowNetworkPanel(snap, refreshList: true);
+        try
+        {
+            PanelBody.Text = "Router wird abgefragt …";
+            await _network.PingGatewayAsync();
+            var snap = await _network.RefreshRouterAsync(includeHosts: true);
+            _lastRouterUtc = DateTime.UtcNow;
+            _lastHostsUtc = DateTime.UtcNow;
+            ApplyNetworkBars(snap);
+            ShowNetworkPanel(snap, refreshList: true);
+        }
+        catch (Exception ex)
+        {
+            PanelBody.Text = UserFriendlyErrors.Translate(ex);
+        }
     }
 
     private void ShowNetworkPanel(NetworkSnapshot net, bool refreshList)
     {
         var down = net.RouterReachable ? net.WanDownBytesPerSec : net.AdapterDownBytesPerSec;
         var up = net.RouterReachable ? net.WanUpBytesPerSec : net.AdapterUpBytesPerSec;
-        var parts = new List<string>
+        var downMax = net.WanDownBitsMax > 0 ? net.WanDownBitsMax : net.AdapterSpeedBits;
+        var upMax = net.WanUpBitsMax > 0 ? net.WanUpBitsMax : net.AdapterSpeedBits;
+        var lines = new List<string>
         {
-            $"{net.AdapterName}: ↓ {NetworkMonitorService.FormatRate(net.AdapterDownBytesPerSec)} ↑ {NetworkMonitorService.FormatRate(net.AdapterUpBytesPerSec)}"
+            $"{net.AdapterName}: ↓ {NetworkMonitorService.FormatRate(net.AdapterDownBytesPerSec)}  ↑ {NetworkMonitorService.FormatRate(net.AdapterUpBytesPerSec)}"
         };
 
         if (net.RouterReachable)
@@ -602,33 +2859,162 @@ public partial class MainWindow : Window
             var uptime = net.WanUptime.TotalHours >= 1
                 ? $"{net.WanUptime.TotalHours:0} h"
                 : $"{net.WanUptime.Minutes} min";
-            parts.Add($"{net.RouterName} · {net.WanType} {net.WanStatus} · Leitung ↓ {NetworkMonitorService.FormatBits(net.WanDownBitsMax)} ↑ {NetworkMonitorService.FormatBits(net.WanUpBitsMax)}");
-            parts.Add($"WAN jetzt ↓ {NetworkMonitorService.FormatRate(down)} ↑ {NetworkMonitorService.FormatRate(up)} · Volumen seit Verbindung {CleanupService.FormatBytes(net.WanBytesReceived)} ↓ / {CleanupService.FormatBytes(net.WanBytesSent)} ↑ · online {uptime}");
-            if (!string.IsNullOrWhiteSpace(net.ExternalIp))
+            lines.Add($"{net.RouterName} · {net.WanType} {net.WanStatus}");
+            lines.Add($"Leitung max ↓ {NetworkMonitorService.FormatBits(downMax)}  ↑ {NetworkMonitorService.FormatBits(upMax)}");
+            if (downMax <= 0)
             {
-                parts.Add($"öffentliche IP {net.ExternalIp}");
+                lines.Add("Maximalgeschwindigkeit: Router liefert keinen Wert — im Router-Interface unter „Internet“ / „DSL“ nachsehen.");
             }
 
-            parts.Add($"{net.ActiveHostCount} Geräte aktiv, {net.HostCount} bekannt");
+            lines.Add($"WAN live ↓ {NetworkMonitorService.FormatRate(down)}  ↑ {NetworkMonitorService.FormatRate(up)}");
+            lines.Add($"Volumen ↓ {ByteSizeFormatter.Format(net.WanBytesReceived)}  ↑ {ByteSizeFormatter.Format(net.WanBytesSent)}  ·  online {uptime}");
+            if (!string.IsNullOrWhiteSpace(net.ExternalIp))
+            {
+                lines.Add($"Öffentliche IP: {net.ExternalIp}");
+            }
+
+            lines.Add($"Geräte: {net.ActiveHostCount} aktiv / {net.HostCount} bekannt");
         }
 
         if (!string.IsNullOrWhiteSpace(net.Note))
         {
-            parts.Add(net.Note);
+            lines.Add(net.Note);
         }
 
-        PanelBody.Text = string.Join("  ·  ", parts);
+        lines.Add("Hersteller kommt aus der MAC (OUI), nicht aus dem Gerätenamen. Zufällige MAC = Datenschutz, dann kein Hersteller.");
+        lines.Add("Bemerkungen speichern Sie unten — bleiben an der MAC hängen (auch wenn der Name sich ändert).");
+        PanelBody.Text = string.Join("\n", lines);
 
         if (!refreshList) return;
-        DetailList.Items.Clear();
-        foreach (var host in net.Hosts.Where(h => h.Active).Take(40))
+        var rows = net.Hosts.Select(BuildNetworkRow).ToList();
+        ShowDetailRows(rows);
+        _ = EnrichNetworkVendorsAsync(net.Hosts);
+    }
+
+    private DetailRow BuildNetworkRow(RouterHost host)
+    {
+        var macKey = MacVendorLookup.NormalizeMac(host.Mac);
+        var vendorInfo = MacVendorLookup.ResolveLocal(host.Mac, _settings.LearnedMacVendors);
+        var note = "";
+        if (!string.IsNullOrWhiteSpace(macKey) && _settings.NetworkDeviceNotes.TryGetValue(macKey, out var saved))
         {
-            DetailList.Items.Add($"{host.Name}  ·  {host.Ip}  ·  {host.InterfaceType}");
+            note = saved.Trim();
         }
 
-        foreach (var host in net.Hosts.Where(h => !h.Active).Take(8))
+        var title = string.IsNullOrWhiteSpace(host.Name) || host.Name == "—" ? host.Ip : host.Name;
+        if (!string.IsNullOrWhiteSpace(note))
         {
-            DetailList.Items.Add($"{host.Name} (offline)  ·  {host.Ip}");
+            title = $"{title} — {note}";
+        }
+
+        var vendorText = string.IsNullOrWhiteSpace(vendorInfo.Display) ? "Hersteller unbekannt" : vendorInfo.Display;
+
+        return new DetailRow
+        {
+            Col1 = title,
+            Col2 = host.Ip,
+            Col3 = $"{vendorText} · {host.Mac} · {host.InterfaceType}",
+            Tag = host
+        };
+    }
+
+    private async Task EnrichNetworkVendorsAsync(IReadOnlyList<RouterHost> hosts)
+    {
+        if (_mode != "network" || hosts.Count == 0) return;
+        var changed = false;
+        foreach (var host in hosts.Take(25))
+        {
+            if (string.IsNullOrWhiteSpace(host.Mac) || MacVendorLookup.IsRandomizedMac(host.Mac)) continue;
+            var before = MacVendorLookup.ResolveLocal(host.Mac, _settings.LearnedMacVendors);
+            if (!string.IsNullOrWhiteSpace(before.Vendor)) continue;
+            var resolved = await MacVendorLookup.ResolveAsync(host.Mac, _settings.LearnedMacVendors);
+            if (!string.IsNullOrWhiteSpace(resolved.Vendor))
+            {
+                changed = true;
+            }
+
+            await Task.Delay(350);
+        }
+
+        if (changed)
+        {
+            _settings.Save();
+            if (_mode == "network")
+            {
+                ShowDetailRows(_network.Last.Hosts.Select(BuildNetworkRow));
+            }
+        }
+    }
+
+    private void OnDetailGridSelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_mode != "network") return;
+        if (DetailGrid.SelectedItem is not DetailRow row || row.Tag is not RouterHost host)
+        {
+            NetworkNoteBox.IsEnabled = false;
+            NetworkNoteBox.Text = "";
+            NetworkNoteHint.Text = "Gerät in der Liste wählen, dann Bemerkung eintragen (z. B. Handy Chef Sohn).";
+            return;
+        }
+
+        var macKey = MacVendorLookup.NormalizeMac(host.Mac);
+        NetworkNoteBox.IsEnabled = !string.IsNullOrWhiteSpace(macKey);
+        if (string.IsNullOrWhiteSpace(macKey))
+        {
+            NetworkNoteHint.Text = "Für dieses Gerät fehlt die MAC — Bemerkung kann nicht gespeichert werden.";
+            NetworkNoteBox.Text = "";
+            return;
+        }
+
+        var label = string.IsNullOrWhiteSpace(host.Name) || host.Name == "—" ? host.Ip : host.Name;
+        NetworkNoteHint.Text = $"Bemerkung für „{label}“ ({host.Mac}):";
+        NetworkNoteBox.Text = _settings.NetworkDeviceNotes.TryGetValue(macKey, out var note) ? note : "";
+    }
+
+    private void OnNetworkNoteSave(object sender, RoutedEventArgs e)
+    {
+        if (DetailGrid.SelectedItem is not DetailRow row || row.Tag is not RouterHost host)
+        {
+            PanelBody.Text = "Bitte zuerst ein Gerät in der Liste wählen.";
+            return;
+        }
+
+        var macKey = MacVendorLookup.NormalizeMac(host.Mac);
+        if (string.IsNullOrWhiteSpace(macKey))
+        {
+            PanelBody.Text = "Ohne MAC-Adresse kann keine Bemerkung gespeichert werden.";
+            return;
+        }
+
+        var text = NetworkNoteBox.Text?.Trim() ?? "";
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            _settings.NetworkDeviceNotes.Remove(macKey);
+        }
+        else
+        {
+            _settings.NetworkDeviceNotes[macKey] = text;
+        }
+
+        _settings.Save();
+        ShowDetailRows(_network.Last.Hosts.Select(BuildNetworkRow));
+        PanelBody.Text = string.IsNullOrWhiteSpace(text)
+            ? "Bemerkung gelöscht."
+            : $"Bemerkung gespeichert: „{text}“";
+    }
+
+    private async Task ShowAiPanelAsync(bool refreshApps)
+    {
+        try
+        {
+            PanelBody.Text = "KI-Prozesse werden gelesen …";
+            var perf = await Task.Run(() => _performanceMonitor.Sample().Snapshot);
+            var ai = await Task.Run(() => _ai.Capture(_aiFilter, perf.CpuPercent, perf.RamTotalBytes));
+            ShowAiPanel(ai, refreshApps);
+        }
+        catch (Exception ex)
+        {
+            PanelBody.Text = UserFriendlyErrors.Translate(ex);
         }
     }
 
@@ -655,38 +3041,155 @@ public partial class MainWindow : Window
         }
 
         var gpu = ai.GpuAvailable
-            ? $"{ai.GpuName}: {ai.GpuPercent:0}% · VRAM {CleanupService.FormatBytes(ai.GpuMemoryUsedBytes)} von {CleanupService.FormatBytes(ai.GpuMemoryTotalBytes)}"
+            ? $"{ai.GpuName}: {ai.GpuPercent:0}% · VRAM {ByteSizeFormatter.Format(ai.GpuMemoryUsedBytes)} / {ByteSizeFormatter.Format(ai.GpuMemoryTotalBytes)}"
             : "Keine NVIDIA-GPU erkannt";
-        var onGpu = ai.SelectedOnGpu ? "läuft auf der GPU" : "aktuell nicht auf der GPU";
-        PanelBody.Text = $"{ai.FilterLabel}: {ai.CpuPercent:0}% der CPU (System {ai.SystemCpuPercent:0}%) · {CleanupService.FormatBytes(ai.RamBytes)} RAM ({ai.RamPercent:0}%) · {onGpu}. {gpu}";
+        var onGpu = ai.SelectedOnGpu ? "läuft auf GPU" : "nicht auf GPU";
+        PanelBody.Text =
+            $"Filter: {ai.FilterLabel}\n" +
+            $"KI-Anteil: {ai.CpuPercent:0}% CPU · {ByteSizeFormatter.Format(ai.RamBytes)} RAM ({ai.RamPercent:0}%)\n" +
+            $"System gesamt: {ai.SystemCpuPercent:0}% CPU · {onGpu}\n" +
+            $"{gpu}\n" +
+            "Erkannt über laufende Prozesse (kein Festplatten-Scan).";
 
-        var selectedIndex = DetailList.SelectedIndex;
-        DetailList.Visibility = Visibility.Visible;
-        DetailList.Items.Clear();
         if (ai.Rows.Count == 0)
         {
-            DetailList.Items.Add("Keine passenden KI-Prozesse gefunden (Cursor, Ollama, Llama, LM Studio, ChatGPT …).");
+            ShowDetailRows([new DetailRow { Col1 = "—", Col2 = "Keine KI-Prozesse", Col3 = "Cursor, Ollama, Claude, …" }]);
             return;
         }
 
-        foreach (var row in ai.Rows)
+        ShowDetailRows(ai.Rows.Select(row =>
         {
-            var gpuMark = row.OnGpu ? " · GPU" : "";
-            var count = row.Count > 1 ? $" ({row.Count})" : "";
-            DetailList.Items.Add($"{row.Name}{count}  ·  {row.CpuPercent:0.0}% CPU  ·  {CleanupService.FormatBytes(row.RamBytes)}{gpuMark}");
-        }
+            var count = row.Count > 1 ? $" ×{row.Count}" : "";
+            return new DetailRow
+            {
+                Col1 = row.Name + count,
+                Col2 = $"{row.CpuPercent:0.0}%",
+                Col3 = ByteSizeFormatter.Format(row.RamBytes) + (row.OnGpu ? " · GPU" : ""),
+                Tag = row
+            };
+        }));
+    }
 
-        if (selectedIndex >= 0 && selectedIndex < DetailList.Items.Count)
-        {
-            DetailList.SelectedIndex = selectedIndex;
-        }
+    private void UpdateAiLive(AiLoadSnapshot ai)
+    {
+        var gpu = ai.GpuAvailable
+            ? $"{ai.GpuName}: {ai.GpuPercent:0}% · VRAM {ByteSizeFormatter.Format(ai.GpuMemoryUsedBytes)} / {ByteSizeFormatter.Format(ai.GpuMemoryTotalBytes)}"
+            : "Keine NVIDIA-GPU erkannt";
+        var onGpu = ai.SelectedOnGpu ? "läuft auf GPU" : "nicht auf GPU";
+        PanelBody.Text =
+            $"Filter: {ai.FilterLabel}\n" +
+            $"KI-Anteil: {ai.CpuPercent:0}% CPU · {ByteSizeFormatter.Format(ai.RamBytes)} RAM ({ai.RamPercent:0}%)\n" +
+            $"System gesamt: {ai.SystemCpuPercent:0}% CPU · {onGpu}\n" +
+            $"{gpu}\n" +
+            "Erkannt über laufende Prozesse (kein Festplatten-Scan).";
     }
 
     private async Task QuietUpdateCheckAsync()
     {
         var info = await _update.CheckAsync();
         if (!info.UpdateAvailable) return;
-        VersionLabel.Text = $"Version {info.CurrentVersion} · Update {info.LatestVersion} verfügbar";
+        VersionLabel.Text = $"Version {info.CurrentVersion} · Update {info.LatestVersion} (Einstellungen → KlarWin Update)";
+    }
+
+    private async Task RefreshSoftwareUpdatesAsync(bool invalidateCache = false)
+    {
+        PrimaryAction.IsEnabled = false;
+        ShowPanelProgress("Updates werden gesucht …");
+        PanelBody.Text = "Programme (winget) und Treiber (Windows Update) werden parallel geprüft …";
+        try
+        {
+            if (!SoftwareUpdateService.IsWingetAvailable())
+            {
+                PanelBody.Text = "„winget“ ist nicht verfügbar. Bitte App Installer / Windows Package Manager installieren, dann erneut prüfen.";
+            }
+
+            if (invalidateCache)
+            {
+                SoftwareUpdateService.InvalidateCache();
+            }
+
+            var progress = new Progress<string>(t =>
+            {
+                PanelBody.Text = t;
+                PanelProgressText.Text = t;
+            });
+            var wingetTask = _softwareUpdates.ListWingetOnlyAsync(progress);
+            var driverTask = _softwareUpdates.ListDriversOnlyAsync(progress);
+
+            var apps = await wingetTask;
+            _softwareUpdateItems = apps.ToList();
+            ShowSoftwareUpdateCheckboxes(_softwareUpdateItems);
+            PanelBody.Text = apps.Count == 0
+                ? "Keine Programm-Updates (winget). Treiber werden geprüft …"
+                : $"{apps.Count} Programm-Update(s) — Treiber werden geprüft …";
+
+            var drivers = await driverTask;
+            _softwareUpdateItems = apps.Concat(drivers).ToList();
+            ShowSoftwareUpdateCheckboxes(_softwareUpdateItems);
+
+            var appCount = _softwareUpdateItems.Count(i => i.Kind == "Programm");
+            var driverCount = _softwareUpdateItems.Count(i => i.Kind == "Treiber");
+            PanelBody.Text = _softwareUpdateItems.Count == 0
+                ? "Keine Updates gefunden. KlarWin selbst aktualisieren Sie unter Einstellungen → KlarWin Update."
+                : $"{appCount} Programm(e), {driverCount} Treiber — auswählen und „Auswahl installieren“. KlarWin-Update: Zahnrad → KlarWin Update.";
+        }
+        catch (Exception ex)
+        {
+            PanelBody.Text = UserFriendlyErrors.Translate(ex);
+        }
+        finally
+        {
+            HidePanelProgress();
+            PrimaryAction.IsEnabled = true;
+        }
+    }
+
+    private void ShowSoftwareUpdateCheckboxes(IReadOnlyList<SoftwareUpdateItem> items)
+    {
+        ShowItemCheckboxes(items.Select(item =>
+            (item.Id + "|" + item.Kind,
+            $"{item.Kind}: {item.Name}  ({item.CurrentVersion} → {item.AvailableVersion})",
+            item.Source == "winget" ? "winget" : "Windows Update",
+            false,
+            (object)item,
+            (ImageSource?)null)));
+    }
+
+    private async Task InstallSoftwareUpdatesAsync()
+    {
+        var selected = CheckedItemTags<SoftwareUpdateItem>().ToList();
+        if (selected.Count == 0)
+        {
+            PanelBody.Text = "Bitte mindestens ein Update auswählen (oder „Alles auswählen“).";
+            return;
+        }
+
+        var confirm = MessageBox.Show(
+            this,
+            $"{selected.Count} Update(s) wirklich installieren?\n\nManche Programme starten ggf. neu. Treiber können einen Neustart verlangen.",
+            "KlarWin — Updates",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Question);
+        if (confirm != MessageBoxResult.Yes) return;
+
+        PrimaryAction.IsEnabled = false;
+        try
+        {
+            var result = await RunWithInstallProgressAsync(selected.Count, async progress =>
+            {
+                return await _softwareUpdates.InstallSelectedAsync(selected, progress);
+            });
+            PanelBody.Text = result;
+        }
+        catch (Exception ex)
+        {
+            PanelBody.Text = UserFriendlyErrors.Translate(ex);
+        }
+        finally
+        {
+            PrimaryAction.IsEnabled = true;
+            await RefreshSoftwareUpdatesAsync(invalidateCache: true);
+        }
     }
 
     private async Task CheckUpdateAsync(bool applyPrompt)
@@ -730,14 +3233,16 @@ public partial class MainWindow : Window
         PrimaryAction.IsEnabled = false;
         var progress = new Progress<string>(text => PanelBody.Text = text);
         var message = await _update.DownloadAndPrepareRestartAsync(_pendingUpdate, progress);
+        if (message == "UPDATE_OK")
+        {
+            PanelBody.Text = "Update wird installiert — KlarWin startet gleich neu …";
+            App.ReleaseSingleInstanceForUpdate();
+            await Task.Delay(1500);
+            Environment.Exit(0);
+            return;
+        }
+
         PanelBody.Text = message;
-        if (message.Contains("startet", StringComparison.OrdinalIgnoreCase))
-        {
-            Application.Current.Shutdown();
-        }
-        else
-        {
-            PrimaryAction.IsEnabled = true;
-        }
+        PrimaryAction.IsEnabled = true;
     }
 }

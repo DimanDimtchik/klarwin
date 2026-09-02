@@ -2,6 +2,9 @@ name: Deploy KlarWin
 
 on:
   workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
 
 jobs:
   deploy:
@@ -15,6 +18,7 @@ jobs:
 
       - name: Publish
         run: |
+          if (Test-Path bin/build-icon.py) { python bin/build-icon.py }
           dotnet publish src/KlarWin/KlarWin.csproj -c Release -r win-x64 --self-contained true `
             -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true `
             -p:EnableCompressionInSingleFile=true `
@@ -27,8 +31,8 @@ jobs:
           New-Item -ItemType Directory -Force -Path out | Out-Null
           Copy-Item deploy/dg.ganz-soft.de/klarwin/version.json out/
           Copy-Item deploy/dg.ganz-soft.de/klarwin/index.html out/
-          Copy-Item docs/KlarWin-Handbuch.pdf out/
-          Copy-Item docs/KlarWin-Handbuch.html out/
+          if (Test-Path docs/KlarWin-Handbuch.pdf) { Copy-Item docs/KlarWin-Handbuch.pdf out/ }
+          if (Test-Path docs/KlarWin-Handbuch.html) { Copy-Item docs/KlarWin-Handbuch.html out/ }
           Compress-Archive -Path dist/KlarWin/KlarWin.exe,dist/KlarWin/Installieren.bat -DestinationPath out/KlarWin-Setup.zip -Force
           Get-ChildItem out | Format-Table Name, Length
 
@@ -61,7 +65,12 @@ jobs:
         run: |
           REMOTE=www/htdocs/w0217246
           ssh allinkl "mkdir -p $REMOTE/dg.ganz-soft.de/klarwin $REMOTE/ganz-soft.de/klarwin"
+          # dg = Download-Spiegel (einfache index.html erlaubt)
           scp out/KlarWin-Setup.zip out/version.json out/index.html out/KlarWin-Handbuch.pdf out/KlarWin-Handbuch.html \
-            allinkl:$REMOTE/dg.ganz-soft.de/klarwin/
-          scp out/version.json allinkl:$REMOTE/ganz-soft.de/klarwin/version.json
-          echo "OK https://dg.ganz-soft.de/klarwin/"
+            allinkl:$REMOTE/dg.ganz-soft.de/klarwin/ 2>/dev/null || \
+          scp out/KlarWin-Setup.zip out/version.json out/index.html allinkl:$REMOTE/dg.ganz-soft.de/klarwin/
+          # ganz-soft.de: nur Update-Dateien — Marketing-Seite aus ganz-soft-landing nicht überschreiben
+          scp out/KlarWin-Setup.zip out/version.json allinkl:$REMOTE/ganz-soft.de/klarwin/
+          if [ -f out/KlarWin-Handbuch.pdf ]; then scp out/KlarWin-Handbuch.pdf allinkl:$REMOTE/ganz-soft.de/klarwin/; fi
+          echo "OK https://ganz-soft.de/klarwin/ (ZIP + version.json)"
+          echo "OK https://dg.ganz-soft.de/klarwin/ (Download-Spiegel)"

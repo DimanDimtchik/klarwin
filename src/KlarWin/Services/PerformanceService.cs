@@ -83,14 +83,16 @@ public sealed class PerformanceService : IDisposable
     private static (double Percent, long Used, long Total) ReadMemory()
     {
         var status = new MemoryStatusEx { Length = (uint)Marshal.SizeOf<MemoryStatusEx>() };
-        if (!GlobalMemoryStatusEx(ref status) || status.TotalPhys == 0)
+        if (GlobalMemoryStatusEx(ref status) && status.TotalPhys > 0)
         {
-            return (0, 0, 0);
+            var total = (long)status.TotalPhys;
+            var used = (long)(status.TotalPhys - status.AvailPhys);
+            total = ByteSizeFormatter.SanitizeBytes(total, ByteSizeKind.Ram);
+            used = ByteSizeFormatter.SanitizeBytes(used, ByteSizeKind.Ram);
+            return (100.0 * used / total, used, total);
         }
 
-        var used = (long)(status.TotalPhys - status.AvailPhys);
-        var percent = 100.0 * used / status.TotalPhys;
-        return (percent, used, (long)status.TotalPhys);
+        return (0, 0, 0);
     }
 
     private static (string Name, double FreePercent, long Free, long Total) ReadSystemDisk()
@@ -101,10 +103,14 @@ public sealed class PerformanceService : IDisposable
 
         if (drive is null || drive.TotalSize <= 0)
         {
-            return ("—", 0, 0, 0);
+            return ("C:", 0, 0, 0);
         }
 
-        return (drive.Name.TrimEnd('\\'), 100.0 * drive.AvailableFreeSpace / drive.TotalSize, drive.AvailableFreeSpace, drive.TotalSize);
+        var name = drive.Name.TrimEnd('\\', '/');
+        if (!name.EndsWith(':')) name += ":";
+        var free = ByteSizeFormatter.SanitizeBytes(drive.AvailableFreeSpace, ByteSizeKind.Disk);
+        var total = ByteSizeFormatter.SanitizeBytes(drive.TotalSize, ByteSizeKind.Disk);
+        return (name, total > 0 ? 100.0 * free / total : 0, free, total);
     }
 
     public void Dispose()

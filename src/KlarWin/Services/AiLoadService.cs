@@ -42,12 +42,17 @@ public sealed class AiLoadService
     private static readonly (string Id, string Label, string[] Names)[] Catalog =
     [
         ("cursor", "Cursor", ["cursor"]),
+        ("vscode", "VS Code", ["code"]),
         ("ollama", "Ollama", ["ollama", "ollama app"]),
-        ("llama", "Llama", ["llama", "llama-server", "llama.cpp", "llamacpp"]),
+        ("llama", "Llama.cpp", ["llama", "llama-server", "llama.cpp", "llamacpp", "llama-cpp"]),
         ("lmstudio", "LM Studio", ["lm studio", "lmstudio"]),
         ("chatgpt", "ChatGPT", ["chatgpt", "chatgpt classic"]),
+        ("claude", "Claude", ["claude"]),
         ("comfy", "ComfyUI", ["comfyui", "comfy"]),
-        ("python", "Python (KI)", ["python", "pythonw"])
+        ("stable", "Stable Diffusion", ["stable-diffusion", "sd-webui", "webui", "automatic1111"]),
+        ("python", "Python (KI)", ["python", "pythonw"]),
+        ("docker", "Docker (KI)", ["docker", "com.docker.backend"]),
+        ("wsl", "WSL / Linux", ["wsl", "wslhost", "vmmem", "vmwp"])
     ];
 
     private static readonly string[] PythonHints = ["ollama", "llama", "transformers", "vllm", "comfy", "diffusers", "whisper"];
@@ -115,7 +120,8 @@ public sealed class AiLoadService
             .ThenByDescending(r => r.RamBytes)
             .ToList();
 
-        var ram = filtered.Sum(m => m.Ram);
+        var ram = ByteSizeFormatter.SanitizeBytes(filtered.Sum(m => m.Ram), ByteSizeKind.ProcessRam);
+        systemRamBytes = ByteSizeFormatter.SanitizeBytes(systemRamBytes, ByteSizeKind.Ram);
         var apps = Catalog
             .Where(c => seenGroups.Contains(c.Id))
             .Select(c => new AiAppGroup { Id = c.Id, Label = c.Label })
@@ -260,9 +266,32 @@ public sealed class AiLoadService
             GpuAvailable = true,
             GpuName = parts.Length > 0 ? parts[0] : "NVIDIA",
             GpuPercent = parts.Length > 1 && double.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out var util) ? util : 0,
-            GpuMemoryUsedBytes = parts.Length > 2 && long.TryParse(parts[2].Split(' ')[0], NumberStyles.Integer, CultureInfo.InvariantCulture, out var used) ? used * 1024 * 1024 : 0,
-            GpuMemoryTotalBytes = parts.Length > 3 && long.TryParse(parts[3].Split(' ')[0], NumberStyles.Integer, CultureInfo.InvariantCulture, out var total) ? total * 1024 * 1024 : 0
+            GpuMemoryUsedBytes = ByteSizeFormatter.SanitizeBytes(ParseGpuMemoryBytes(parts, 2), ByteSizeKind.Vram),
+            GpuMemoryTotalBytes = ByteSizeFormatter.SanitizeBytes(ParseGpuMemoryBytes(parts, 3), ByteSizeKind.Vram)
         };
+    }
+
+    private static long ParseGpuMemoryBytes(string[] parts, int index)
+    {
+        if (parts.Length <= index) return 0;
+        var token = parts[index].Split(' ', StringSplitOptions.RemoveEmptyEntries)[0];
+        if (!long.TryParse(token, NumberStyles.Integer, CultureInfo.InvariantCulture, out var value))
+        {
+            return 0;
+        }
+
+        var unit = parts[index].ToUpperInvariant();
+        if (unit.Contains("GIB", StringComparison.Ordinal) || unit.Contains("GB", StringComparison.Ordinal))
+        {
+            return value * 1024L * 1024 * 1024;
+        }
+
+        if (value > 1_000_000_000)
+        {
+            return value;
+        }
+
+        return value * 1024L * 1024;
     }
 
     private static string? FindNvidiaSmi()

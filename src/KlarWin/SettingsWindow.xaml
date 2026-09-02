@@ -1,0 +1,167 @@
+<Window x:Class="KlarWin.SettingsWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="KlarWin — Einstellungen"
+        Height="720" Width="720"
+        MinHeight="560" MinWidth="640"
+        WindowStartupLocation="CenterOwner"
+        FontFamily="Sitka Text"
+        Background="#EEF3EF"
+        Foreground="#18241F">
+    <Grid Margin="24">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <TextBlock FontFamily="Bahnschrift" FontSize="28" Text="Einstellungen"/>
+
+        <TabControl Grid.Row="1" Margin="0,16,0,16" FontSize="14">
+            <TabItem Header="Design">
+                <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="8">
+                    <StackPanel>
+                        <TextBlock FontFamily="Bahnschrift" FontSize="16" Margin="0,0,0,8" Text="Hintergrund"/>
+                        <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                            <RadioButton x:Name="BgGradient" Content="Verlauf" Margin="0,0,16,0" GroupName="Bg" IsChecked="True"/>
+                            <RadioButton x:Name="BgSolid" Content="Einfarbig" Margin="0,0,16,0" GroupName="Bg"/>
+                            <RadioButton x:Name="BgImage" Content="Bild" GroupName="Bg"/>
+                        </StackPanel>
+                        <WrapPanel Margin="0,0,0,8">
+                            <TextBlock VerticalAlignment="Center" Width="90" Text="Farbe 1"/>
+                            <TextBox x:Name="Color1Box" Width="100" Margin="0,0,16,0"/>
+                            <TextBlock VerticalAlignment="Center" Width="90" Text="Farbe 2"/>
+                            <TextBox x:Name="Color2Box" Width="100" Margin="0,0,16,0"/>
+                            <TextBlock VerticalAlignment="Center" Width="90" Text="Farbe 3"/>
+                            <TextBox x:Name="Color3Box" Width="100"/>
+                        </WrapPanel>
+                        <DockPanel Margin="0,0,0,16">
+                            <Button DockPanel.Dock="Right" Content="Bild wählen …" Click="OnPickImage" Padding="12,6" Margin="8,0,0,0"/>
+                            <TextBox x:Name="ImagePathBox" IsReadOnly="True"/>
+                        </DockPanel>
+
+                        <TextBlock FontFamily="Bahnschrift" FontSize="16" Margin="0,8,0,8" Text="Schrift"/>
+                        <WrapPanel Margin="0,0,0,8">
+                            <TextBlock VerticalAlignment="Center" Width="120" Text="Schriftart UI"/>
+                            <ComboBox x:Name="FontUiBox" Width="200" IsEditable="True" Margin="0,0,16,0"/>
+                            <TextBlock VerticalAlignment="Center" Width="100" Text="Titel-Schrift"/>
+                            <ComboBox x:Name="FontTitleBox" Width="180" IsEditable="True"/>
+                        </WrapPanel>
+                        <WrapPanel Margin="0,0,0,8">
+                            <TextBlock VerticalAlignment="Center" Width="120" Text="Textgröße"/>
+                            <TextBox x:Name="FontSizeBodyBox" Width="60" Margin="0,0,16,0"/>
+                            <TextBlock VerticalAlignment="Center" Width="100" Text="Titelgröße"/>
+                            <TextBox x:Name="FontSizeTitleBox" Width="60"/>
+                        </WrapPanel>
+                        <WrapPanel Margin="0,0,0,16">
+                            <TextBlock VerticalAlignment="Center" Width="120" Text="Textfarbe"/>
+                            <TextBox x:Name="InkBox" Width="100" Margin="0,0,16,0"/>
+                            <TextBlock VerticalAlignment="Center" Width="100" Text="Nebentext"/>
+                            <TextBox x:Name="MuteBox" Width="100" Margin="0,0,16,0"/>
+                            <TextBlock VerticalAlignment="Center" Width="80" Text="Akzent"/>
+                            <TextBox x:Name="AccentBox" Width="100"/>
+                        </WrapPanel>
+
+                        <TextBlock FontFamily="Bahnschrift" FontSize="16" Margin="0,8,0,8" Text="Kacheln"/>
+                        <WrapPanel Margin="0,0,0,8">
+                            <TextBlock VerticalAlignment="Center" Width="120" Text="Eckenradius"/>
+                            <TextBox x:Name="TileRadiusBox" Width="60" Margin="0,0,16,0"/>
+                            <TextBlock VerticalAlignment="Center" Width="100" Text="Rahmen-Dicke"/>
+                            <TextBox x:Name="TileThicknessBox" Width="60"/>
+                        </WrapPanel>
+                        <WrapPanel Margin="0,0,0,8">
+                            <TextBlock VerticalAlignment="Center" Width="120" Text="Rahmenfarbe"/>
+                            <TextBox x:Name="TileBorderBox" Width="100" Margin="0,0,16,0"/>
+                            <TextBlock VerticalAlignment="Center" Width="100" Text="Hover-Rahmen"/>
+                            <TextBox x:Name="TileHoverBox" Width="100" Margin="0,0,16,0"/>
+                            <TextBlock VerticalAlignment="Center" Width="80" Text="Fläche"/>
+                            <TextBox x:Name="TileBgBox" Width="100"/>
+                        </WrapPanel>
+                        <TextBlock Foreground="#4A5C54" TextWrapping="Wrap" Margin="0,8,0,0"
+                                   Text="Farben als Hex, z. B. #2F6A4A. Änderungen wirken nach „Übernehmen“."/>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
+            <TabItem Header="Über GanzSoft">
+                <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="12">
+                    <StackPanel>
+                        <TextBlock FontFamily="Bahnschrift" FontSize="22" Text="ganz-soft.de"/>
+                        <TextBlock Margin="0,10,0,0" TextWrapping="Wrap" FontSize="15" LineHeight="24"
+                                   Text="GanzSoft entwickelt praktische Software für Alltag und Unternehmen — klar, ohne Ballast, mit Fokus auf Nutzen statt Features-um-der-Features-willen."/>
+                        <TextBlock Margin="0,16,0,6" FontFamily="Bahnschrift" FontSize="16" Text="Was wir machen"/>
+                        <TextBlock TextWrapping="Wrap" LineHeight="22"
+                                   Text="• Windows-Helfer wie KlarWin (aufräumen, sichern, Netz, KI-Last)&#10;• CRM und Web-Lösungen für Betriebe&#10;• Individuelle Software und Integration nach Bedarf"/>
+                        <TextBlock Margin="0,16,0,6" FontFamily="Bahnschrift" FontSize="16" Text="Weitere Software"/>
+                        <TextBlock TextWrapping="Wrap" LineHeight="22"
+                                   Text="Auf ganz-soft.de finden Sie aktuelle Produkte, Downloads und Kontakt. KlarWin ist Teil dieser Familie und wird laufend erweitert."/>
+                        <Button Margin="0,18,0,0" HorizontalAlignment="Left" Padding="16,8"
+                                Content="ganz-soft.de öffnen" Click="OnOpenWebsite"/>
+                        <TextBlock Margin="0,20,0,0" Foreground="#4A5C54" FontSize="13"
+                                   Text="KlarWin · GanzSoft · kostenlos nutzbar"/>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
+            <TabItem Header="KlarWin Update">
+                <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="12">
+                    <StackPanel>
+                        <TextBlock FontFamily="Bahnschrift" FontSize="16" Text="Diese App aktualisieren"/>
+                        <TextBlock x:Name="KlarWinUpdateStatus" Margin="0,10,0,12" TextWrapping="Wrap"
+                                   Text="Status wird geladen …"/>
+                        <StackPanel Orientation="Horizontal">
+                            <Button Content="Jetzt prüfen" Click="OnKlarWinCheck" Padding="14,8" Margin="0,0,10,0"/>
+                            <Button x:Name="KlarWinUpdateButton" Content="KlarWin aktualisieren" Click="OnKlarWinApply"
+                                    Padding="14,8" Background="#2F6A4A" Foreground="White" IsEnabled="False"/>
+                        </StackPanel>
+                        <TextBlock Margin="0,16,0,0" Foreground="#4A5C54" TextWrapping="Wrap"
+                                   Text="Programme und Treiber aktualisieren Sie über die Kachel „Apps &amp; Treiber“ im Hauptfenster."/>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
+            <TabItem Header="Desktop">
+                <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="12">
+                    <StackPanel>
+                        <TextBlock FontFamily="Bahnschrift" FontSize="16" Text="KlarWin auf dem Desktop"/>
+                        <CheckBox x:Name="ShowDesktopIconBox" Margin="0,12,0,8"
+                                  Content="KlarWin-Symbol auf dem Desktop anzeigen"
+                                  Checked="OnDesktopSettingChanged" Unchecked="OnDesktopSettingChanged"/>
+                        <TextBlock x:Name="DesktopIconHint" TextWrapping="Wrap" Foreground="#4A5C54" LineHeight="22"
+                                   Text="Legt eine Verknüpfung „KlarWin“ auf Ihrem Desktop an — oder entfernt sie. Die App selbst bleibt installiert."/>
+                        <TextBlock x:Name="DesktopIconStatus" Margin="0,10,0,0" TextWrapping="Wrap" Foreground="#8C6239"/>
+                        <TextBlock Margin="0,14,0,0" Foreground="#4A5C54" FontSize="13" TextWrapping="Wrap"
+                                   Text="Verknüpfungspfeile auf Desktop-Symbolen schalten Sie in der Kachel „04 Desktop — Verknüpfungen“ im Hauptfenster."/>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
+            <TabItem Header="Werbung">
+                <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="12">
+                    <StackPanel>
+                        <TextBlock FontFamily="Bahnschrift" FontSize="16" Text="Eigenwerbung (immer sichtbar)"/>
+                        <TextBlock Margin="0,8,0,12" TextWrapping="Wrap" Foreground="#4A5C54"
+                                   Text="Der Banner für DG CRM bleibt dauerhaft eingeblendet. Sie können nur die Position wählen."/>
+                        <StackPanel Orientation="Horizontal" Margin="0,0,0,12">
+                            <TextBlock VerticalAlignment="Center" Margin="0,0,10,0" Text="Position"/>
+                            <ComboBox x:Name="PromoPosBox" Width="140">
+                                <ComboBoxItem Content="Unten" Tag="Bottom"/>
+                                <ComboBoxItem Content="Links" Tag="Left"/>
+                                <ComboBoxItem Content="Rechts" Tag="Right"/>
+                            </ComboBox>
+                        </StackPanel>
+                        <TextBlock FontFamily="Bahnschrift" FontSize="16" Margin="0,12,0,8" Text="Fremdwerbung (Google / Microsoft)?"/>
+                        <TextBlock TextWrapping="Wrap" LineHeight="22"
+                                   Text="Google AdSense und das klassische Microsoft Advertising SDK sind für normale WPF-Desktop-Programme nicht vorgesehen. AdSense in einer Desktop-App einzubetten kann gegen die Nutzungsbedingungen verstoßen und zum Kontosperren führen.&#10;&#10;Sinnvolle Wege für KlarWin:&#10;• Eigenwerbung für ganz-soft.de / DG CRM (aktuell)&#10;• Partner-/Affiliate-Links — nur mit erlaubtem Programm&#10;• Spezialisierte Desktop-Ad-Netzwerke — Reputation prüfen&#10;• Optionale Pro-Version ohne Banner später"/>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+        </TabControl>
+
+        <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right">
+            <Button Content="Standard" Click="OnResetDefaults" Padding="16,8" Margin="0,0,10,0"/>
+            <Button Content="Abbrechen" Click="OnCancel" Padding="16,8" Margin="0,0,10,0"/>
+            <Button Content="Übernehmen" Click="OnApply" Padding="16,8" Background="#2F6A4A" Foreground="White"/>
+        </StackPanel>
+    </Grid>
+</Window>

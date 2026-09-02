@@ -14,6 +14,9 @@ Paket: `deploy/dg.ganz-soft.de/klarwin/KlarWin-Setup.zip`
 Handbuch: `deploy/dg.ganz-soft.de/klarwin/KlarWin-Handbuch.pdf`
 
 ```powershell
+# Icon aus PNG erzeugen (nach Änderung an Assets/klarwin-icon.png):
+python bin/build-icon.py
+
 # Neu bauen + zippen, dann hochladen:
 .\deploy\deploy-klarwin.ps1
 ```

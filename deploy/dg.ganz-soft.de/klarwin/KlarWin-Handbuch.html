@@ -11,7 +11,7 @@
   h3 { font-family: Bahnschrift, Calibri, sans-serif; font-size: 12pt; margin: 12pt 0 4pt; }
   p, li { margin: 0 0 6pt; }
   .meta { color: #4A5C54; font-size: 10pt; margin-bottom: 16pt; }
-  ul { margin: 0 0 8pt 18pt; }
+  ul, ol { margin: 0 0 8pt 18pt; }
   code { font-family: Consolas, monospace; background: #EEF3EF; padding: 1px 4px; }
   .box { background: #F4F8F5; border: 1px solid #C3D1C8; padding: 10pt 12pt; margin: 10pt 0; }
   .footer { margin-top: 24pt; font-size: 9pt; color: #4A5C54; }
@@ -19,54 +19,84 @@
 </head>
 <body>
 <h1>KlarWin</h1>
-<p class="meta">Installations- und Benutzeranleitung · Version 1.0 · GanzSoft · https://ganz-soft.de/klarwin</p>
+<p class="meta">Installations- und Benutzeranleitung · Version 1.3 · GanzSoft · https://ganz-soft.de/klarwin</p>
 
 <h2>1. Installation</h2>
 <ol>
-  <li>Laden Sie <code>KlarWin-Setup.zip</code> von <code>https://dg.ganz-soft.de/klarwin/</code> herunter.</li>
+  <li>Laden Sie <code>KlarWin-Setup.zip</code> von <code>https://ganz-soft.de/klarwin/KlarWin-Setup.zip</code> herunter.</li>
   <li>Entpacken Sie die ZIP-Datei in einen Ordner Ihrer Wahl.</li>
   <li>Doppelklick auf <code>Installieren.bat</code> – KlarWin wird unter <code>%LOCALAPPDATA%\KlarWin</code> abgelegt, Verknüpfungen auf Desktop und Startmenü erscheinen, die App startet.</li>
-  <li>Alternativ: nur <code>KlarWin.exe</code> starten (portable, ohne Installation).</li>
+  <li><strong>Wichtig:</strong> Starten Sie KlarWin danach immer über die Desktop- oder Startmenü-Verknüpfung – nicht aus dem Downloads-Ordner.</li>
 </ol>
-<div class="box">Windows 10 oder 11 (64-Bit). Kein separates .NET-Setup nötig. Administratorrechte nur für einzelne Aktionen (z.&nbsp;B. Verknüpfungspfeile).</div>
+<div class="box">
+  Windows 10 oder 11 (64-Bit). Kein separates .NET-Setup nötig. Administratorrechte nur für einzelne Aktionen (z.&nbsp;B. Windows-Temp bereinigen, Verknüpfungspfeile).
+</div>
+<div class="box">
+  <strong>SmartScreen:</strong> Beim ersten Start kann Windows „Unbekannter Herausgeber“ anzeigen. Das ist normal bei kostenloser Software ohne kostenpflichtiges Code-Signing-Zertifikat. Klicken Sie auf „Weitere Informationen“ → „Trotzdem ausführen“, wenn Sie die Datei von ganz-soft.de bezogen haben.
+</div>
 
-<h2>2. Die zehn Kacheln</h2>
+<h2>2. Updates</h2>
+<p>KlarWin prüft automatisch auf Updates. In <strong>Einstellungen → KlarWin Update</strong> sehen Sie die installierte Version und können ein Update starten.</p>
+<ul>
+  <li>Download-Quelle: <code>https://ganz-soft.de/klarwin/</code></li>
+  <li>Installation erfolgt nach <code>%LOCALAPPDATA%\KlarWin</code></li>
+  <li>Protokoll: <code>%LOCALAPPDATA%\KlarWin\update.log</code></li>
+</ul>
+
+<h2>3. Die Kacheln (Überblick)</h2>
 <ol>
   <li><strong>Bereinigen</strong> – Temp, Cache, Papierkorb; zuerst Vorschau möglich.</li>
-  <li><strong>Beschleunigen</strong> – Hochleistung, weniger Animationen, DNS-Cache leeren.</li>
-  <li><strong>Leistung</strong> – CPU, RAM und freier Speicher live.</li>
+  <li><strong>Beschleunigen</strong> – Hochleistung, weniger Animationen, DNS-Cache, Akku-Lademodus, Kühlprofil.</li>
+  <li><strong>Leistung</strong> – CPU, RAM, Temperatur, System-Gesundheit, 24-Stunden-Verlauf.</li>
   <li><strong>Verknüpfungen</strong> – Desktop-Pfeil ausblenden oder wiederherstellen (Admin).</li>
   <li><strong>Autostart</strong> – Programme beim Windows-Start anzeigen und abschalten.</li>
-  <li><strong>Überschreiben</strong> – nur <em>freien</em> Speicher mit Nullen, DoD oder Gutmann; Dateien bleiben.</li>
+  <li><strong>Überschreiben</strong> – nur <em>freien</em> Speicher sicher überschreiben; Dateien bleiben.</li>
   <li><strong>Wiederherstellen</strong> – Einträge aus dem Papierkorb zurückholen.</li>
-  <li><strong>Keys sichern</strong> – Windows-/Office- und weitere Keys nach Dokumente\KlarWin.</li>
-  <li><strong>Netzwerk</strong> – PC-Adapter und Router-Daten (eigene Kachel).</li>
-  <li><strong>KI-Last</strong> – CPU/RAM/GPU für KI-Apps (eigene Kachel).</li>
+  <li><strong>Keys sichern</strong> – Windows-/Office-Keys exportieren.</li>
+  <li><strong>Netzwerk</strong> – PC-Adapter und Router-Daten (UPnP/IGD).</li>
+  <li><strong>KI-Last</strong> – CPU/RAM/GPU für KI-Apps (Cursor, Ollama, …).</li>
+  <li><strong>Updates</strong> – winget-Programme und Windows-Treiber.</li>
+  <li><strong>Backup / USB</strong> – Systemabbild, Windows-ISO, USB-Stick.</li>
 </ol>
 
-<h2>3. Netzwerk</h2>
-<p>Die Kachel <strong>Netzwerk</strong> zeigt Download/Upload und Ping. Zusätzlich liest KlarWin per UPnP/IGD Daten vom Router (WAN-Status, Leitung, Volumen, Geräte), wenn der Router das freigibt.</p>
+<h2>4. Leistung &amp; System-Gesundheit</h2>
+<p>Die Kachel <strong>Leistung</strong> zeigt live CPU, RAM und Temperatur. In der Detailansicht:</p>
 <ul>
-  <li>Getestet u.&nbsp;a. mit Fritz!Box; funktioniert herstellerübergreifend, sofern IGD/UPnP aktiv ist.</li>
-  <li>Ohne UPnP bleiben PC-Netzwerk und LAN-Nachbarn sichtbar.</li>
-  <li>„Router öffnen“ startet die Weboberfläche des Gateways im Browser.</li>
+  <li><strong>System-Gesundheit</strong> – Thermik, RAM, Festplatte, Akku, SMART, Systemprotokoll</li>
+  <li><strong>Akku</strong> – Restkapazität in % (Design vs. Volllad-Kapazität), Ladestand, ggf. Ladezyklen; Verlauf wird lokal gespeichert</li>
+  <li><strong>Verlauf (24 h)</strong> – CPU, RAM und CPU-Temperatur, ein Messpunkt pro Minute, lokal in <code>performance-trend.json</code></li>
+</ul>
+<p>Akku-Verlauf: <code>%LOCALAPPDATA%\KlarWin\battery-history.json</code></p>
+
+<h2>5. Netzwerk</h2>
+<p>Die Kachel <strong>Netzwerk</strong> zeigt Download/Upload und Ping. Zusätzlich liest KlarWin per UPnP/IGD Router-Daten (WAN, Volumen, Geräte), wenn der Router das freigibt.</p>
+<ul>
+  <li>Funktioniert herstellerübergreifend mit UPnP/IGD (Fritz!Box, Speedport, ASUS, …)</li>
+  <li>Ohne UPnP bleiben PC-Netzwerk und LAN-Nachbarn sichtbar</li>
 </ul>
 
-<h2>4. KI-Last</h2>
-<p>Filter oben: <strong>Alle KI</strong> oder gezielt Cursor, Ollama, Llama, LM Studio, ChatGPT. Anzeige: Anteil an CPU und RAM, GPU über nvidia-smi (falls vorhanden).</p>
+<h2>6. KI-Last</h2>
+<p>Filter: <strong>Alle KI</strong> oder gezielt Cursor, Ollama, Llama, LM Studio, ChatGPT. GPU über nvidia-smi, falls vorhanden.</p>
 
-<h2>5. Sicherheitshinweise</h2>
+<h2>7. Protokolle &amp; Diagnose</h2>
 <ul>
-  <li>Überschreiben betrifft nur freien Speicher – vorhandene Dateien und Programme bleiben.</li>
+  <li><code>update.log</code> – Update-Vorgänge</li>
+  <li><code>klarwin.log</code> – Fehler und Abstürze (lokal, keine Cloud)</li>
+  <li><code>powercfg /batteryreport</code> – Windows-Batteriebericht (zusätzliche Akku-Details)</li>
+</ul>
+
+<h2>8. Sicherheitshinweise</h2>
+<ul>
+  <li>Überschreiben betrifft nur freien Speicher – vorhandene Dateien bleiben.</li>
   <li>Auf SSDs reicht meist 1× Nullen; Gutmann ist sehr langsam und oft unnötig.</li>
-  <li>Wiederherstellen gilt für den Papierkorb, nicht für Shift+Entf / bereits überschriebene Daten.</li>
-  <li>Key-Sicherung nur lokal aufbewahren.</li>
+  <li>Wiederherstellen gilt für den Papierkorb, nicht für Shift+Entf.</li>
+  <li>Key-Sicherung nur lokal und sicher aufbewahren.</li>
 </ul>
 
-<h2>6. Support &amp; Download</h2>
+<h2>9. Support &amp; Download</h2>
 <p>Produktseite: <code>https://ganz-soft.de/klarwin</code><br>
-Download: <code>https://dg.ganz-soft.de/klarwin/</code><br>
+Download: <code>https://ganz-soft.de/klarwin/KlarWin-Setup.zip</code><br>
 Anbieter: GanzSoft – Dietrich Ganz</p>
-<p class="footer">Stand: August 2026. Änderungen vorbehalten.</p>
+<p class="footer">Stand: September 2026. Änderungen vorbehalten.</p>
 </body>
 </html>
