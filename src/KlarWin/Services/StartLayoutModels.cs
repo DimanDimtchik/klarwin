@@ -5,6 +5,8 @@ public sealed class MonitorInfo
     public string Id { get; init; } = "";
     public string Name { get; init; } = "";
     public string Manufacturer { get; init; } = "";
+    public string ManufacturerDisplay { get; init; } = "";
+    public string ProductCode { get; init; } = "";
     public string Serial { get; init; } = "";
     public int Width { get; init; }
     public int Height { get; init; }
@@ -12,6 +14,9 @@ public sealed class MonitorInfo
     public int Y { get; init; }
     public bool IsPrimary { get; init; }
     public string DeviceName { get; init; } = "";
+    public double DiagonalInches { get; init; }
+    public int RefreshRateHz { get; init; }
+    public string PositionLabel { get; init; } = "";
 }
 
 public sealed class WorkplaceContext
@@ -52,8 +57,17 @@ public sealed class StartLayoutSettings
 {
     /// <summary>User must opt in before Startlayout features run.</summary>
     public bool Enabled { get; set; }
+    /// <summary>Always true while Enabled; kept for compatibility.</summary>
     public bool ApplyOnLogin { get; set; }
     public bool KlarWinAutostartManaged { get; set; }
     public string? LastProfileId { get; set; }
     public List<WorkplaceProfile> Profiles { get; set; } = [];
+}
+
+public sealed class InstalledAppEntry
+{
+    public string Name { get; init; } = "";
+    public string ExePath { get; init; } = "";
+    public string Source { get; init; } = "";
+    public string Display => string.IsNullOrWhiteSpace(Source) ? Name : $"{Name}  · {Source}";
 }

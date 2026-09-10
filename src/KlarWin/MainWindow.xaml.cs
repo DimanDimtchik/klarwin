@@ -1541,8 +1541,8 @@ public partial class MainWindow : Window
             PanelBody.Text =
                 "Startlayout ist optional und standardmäßig aus.\n\n" +
                 "Wenn Sie die Funktion aktivieren, können Sie Arbeitsplatz-Profile anlegen " +
-                "(Monitore + Netzwerk), Apps bestimmten Monitoren zuordnen und das Layout " +
-                "manuell oder beim KlarWin-Start anwenden.\n\n" +
+                "(Monitore + Netzwerk) und Apps bestimmten Monitoren zuordnen.\n\n" +
+                "Beim Aktivieren startet KlarWin künftig mit Windows und wendet das passende Layout an.\n\n" +
                 "Ohne Aktivierung passiert nichts automatisch.";
             DetailGrid.Visibility = Visibility.Collapsed;
             DetailGrid.ItemsSource = null;
@@ -1588,7 +1588,7 @@ public partial class MainWindow : Window
         enableCb.Unchecked += (_, _) =>
         {
             var answer = MessageBox.Show(this,
-                "Startlayout deaktivieren?\n\nProfile bleiben gespeichert, werden aber nicht mehr angewendet.",
+                "Startlayout deaktivieren?\n\nProfile bleiben gespeichert. KlarWin wird aus dem Windows-Autostart entfernt.",
                 "KlarWin — Startlayout",
                 MessageBoxButton.YesNo,
                 MessageBoxImage.Question);
@@ -1600,73 +1600,46 @@ public partial class MainWindow : Window
 
             _settings.StartLayout.Enabled = false;
             _settings.StartLayout.ApplyOnLogin = false;
+            if (_settings.StartLayout.KlarWinAutostartManaged)
+            {
+                StartLayoutAutostartHelper.RemoveRegistration();
+                _settings.StartLayout.KlarWinAutostartManaged = false;
+            }
+
             _settings.Save();
             OpenStartLayoutPanel();
         };
         OptionsPanel.Children.Add(BuildOptionRow(
             "Startlayout aktiv",
-            "Funktion einschalten. Ohne Haken bleibt Startlayout aus.",
+            "Einschalten: Profile nutzen und Layout beim KlarWin-Start automatisch anwenden.",
             null,
             enableCb));
-
-        var loginCb = new CheckBox
-        {
-            IsChecked = _settings.StartLayout.ApplyOnLogin,
-            VerticalAlignment = VerticalAlignment.Center
-        };
-        loginCb.Checked += (_, _) =>
-        {
-            _settings.StartLayout.ApplyOnLogin = true;
-            var msg = StartLayoutAutostartHelper.EnsureRegistered();
-            _settings.StartLayout.KlarWinAutostartManaged = true;
-            _settings.Save();
-            PanelBody.Text = "Bei KlarWin-Start anwenden: ein.\n" + msg + "\n\n" +
-                             StartLayoutService.FormatDiscovery(
-                                 WorkplaceContextService.Capture(), _settings.StartLayout.Profiles);
-        };
-        loginCb.Unchecked += (_, _) =>
-        {
-            _settings.StartLayout.ApplyOnLogin = false;
-            string extra = "";
-            if (_settings.StartLayout.KlarWinAutostartManaged)
-            {
-                var ask = MessageBox.Show(this,
-                    "KlarWin auch aus dem Windows-Autostart entfernen?\n\n" +
-                    "(Nur der von Startlayout gesetzte Eintrag „KlarWin Startlayout“.)",
-                    "KlarWin — Autostart",
-                    MessageBoxButton.YesNo,
-                    MessageBoxImage.Question);
-                if (ask == MessageBoxResult.Yes)
-                {
-                    extra = StartLayoutAutostartHelper.RemoveRegistration();
-                    _settings.StartLayout.KlarWinAutostartManaged = false;
-                }
-            }
-
-            _settings.Save();
-            PanelBody.Text = "Bei KlarWin-Start anwenden: aus." +
-                             (string.IsNullOrEmpty(extra) ? "" : "\n" + extra);
-        };
-        OptionsPanel.Children.Add(BuildOptionRow(
-            "Bei KlarWin-Start anwenden",
-            "Setzt KlarWin in den Windows-Autostart und wendet nach dem Start das passende Profil an.",
-            null,
-            loginCb));
     }
 
     private void EnableStartLayoutFeature()
     {
         _settings.StartLayout.Enabled = true;
+        _settings.StartLayout.ApplyOnLogin = true;
+        var autostartMsg = StartLayoutAutostartHelper.EnsureRegistered();
+        _settings.StartLayout.KlarWinAutostartManaged = true;
         _settings.Save();
         OpenStartLayoutPanel();
         PanelBody.Text =
-            "Startlayout ist aktiviert.\n\n" +
+            "Startlayout ist aktiviert.\n" +
+            autostartMsg + "\n\n" +
             "1) „Profil speichern“ für diesen Arbeitsplatz\n" +
             "2) „App hinzufügen“ (Rolle primary / left / right)\n" +
-            "3) „Layout anwenden“ testen\n" +
-            "4) Optional: „Bei KlarWin-Start anwenden“\n\n" +
+            "3) „Layout anwenden“ testen\n\n" +
             StartLayoutService.FormatDiscovery(
                 WorkplaceContextService.Capture(), _settings.StartLayout.Profiles);
+
+        MessageBox.Show(this,
+            "Startlayout ist aktiv.\n\n" +
+            autostartMsg + "\n\n" +
+            "Als Nächstes Profil speichern und Apps zuordnen.",
+            "KlarWin — Startlayout",
+            MessageBoxButton.OK,
+            MessageBoxImage.Information);
     }
 
     private void ShowStartLayoutProfileMenu()
@@ -1784,25 +1757,27 @@ public partial class MainWindow : Window
 
     private void RemoveSelectedStartLayoutApp(WorkplaceProfile profile)
     {
-        if (DetailGrid.SelectedItem is not DetailRow row)
+        StartLayoutApp? app = DetailGrid.SelectedItem is DetailRow { Tag: StartLayoutApp tagged }
+            ? tagged
+            : null;
+        if (app is null && DetailGrid.SelectedItem is DetailRow row)
         {
-            MessageBox.Show(this, "Bitte zuerst eine App in der Liste auswählen.", "KlarWin",
+            app = profile.Apps.FirstOrDefault(a =>
+                a.Name.Equals(row.Col1, StringComparison.OrdinalIgnoreCase)
+                && a.Role.Equals(row.Col2, StringComparison.OrdinalIgnoreCase));
+        }
+
+        if (app is null)
+        {
+            MessageBox.Show(this, "Bitte zuerst eine App in der Liste auswählen (unter „— Apps —“).", "KlarWin",
                 MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
 
-        var removed = profile.Apps.RemoveAll(a =>
-            a.Name.Equals(row.Col1, StringComparison.OrdinalIgnoreCase)
-            && a.Role.Equals(row.Col2, StringComparison.OrdinalIgnoreCase));
-        if (removed == 0)
-        {
-            PanelBody.Text = "App nicht gefunden.";
-            return;
-        }
-
+        profile.Apps.Remove(app);
         _settings.Save();
         RefreshStartLayoutPanel();
-        PanelBody.Text = $"App „{row.Col1}“ entfernt.";
+        PanelBody.Text = $"App „{app.Name}“ entfernt.";
     }
 
     private void RefreshStartLayoutPanel()
@@ -1851,28 +1826,40 @@ public partial class MainWindow : Window
 
         var context = WorkplaceContextService.Capture();
         var profiles = _settings.StartLayout.Profiles;
-        var autostartNote = _settings.StartLayout.ApplyOnLogin
-            ? (StartLayoutAutostartHelper.IsRegistered()
-                ? "KlarWin-Autostart: aktiv.\n\n"
-                : "KlarWin-Autostart: fehlt — Haken „Bei KlarWin-Start anwenden“ erneut setzen.\n\n")
-            : "";
-        PanelBody.Text = autostartNote + StartLayoutService.FormatDiscovery(context, profiles);
+        PanelBody.Text = StartLayoutService.FormatDiscovery(context, profiles);
+
+        SetDetailGridColumns("Position / Modell", "Hersteller · Auflösung", "Serie / Hz", 220, 220, 200);
+        DetailGrid.Visibility = Visibility.Visible;
+
         var active = GetSelectedStartLayoutProfile(context);
-        if (active is null || active.Apps.Count == 0)
+        var rows = new List<DetailRow>();
+        foreach (var m in context.Monitors.OrderBy(x => x.X))
         {
-            DetailGrid.Visibility = Visibility.Collapsed;
-            DetailGrid.ItemsSource = null;
-            return;
+            var hz = m.RefreshRateHz > 0 ? $"{m.RefreshRateHz} Hz" : "—";
+            var serial = !string.IsNullOrWhiteSpace(m.Serial) && m.Serial != "0" ? m.Serial : "—";
+            var size = m.DiagonalInches > 0 ? $" · {m.DiagonalInches:0.#}\"" : "";
+            rows.Add(new DetailRow
+            {
+                Col1 = $"[{m.PositionLabel}] {m.Name}",
+                Col2 = $"{m.ManufacturerDisplay} · {m.Width}×{m.Height}{size}",
+                Col3 = $"{serial} · {hz}",
+                Tag = m
+            });
         }
 
-        SetDetailGridColumns("App", "Rolle", "Pfad", 160, 100, 360);
-        DetailGrid.Visibility = Visibility.Visible;
-        DetailGrid.ItemsSource = active.Apps.Select(a => new DetailRow
+        if (active is { Apps.Count: > 0 })
         {
-            Col1 = a.Name,
-            Col2 = a.Role,
-            Col3 = a.ExePath
-        }).ToList();
+            rows.Add(new DetailRow { Col1 = "— Apps —", Col2 = active.Name, Col3 = $"{active.Apps.Count}" });
+            rows.AddRange(active.Apps.Select(a => new DetailRow
+            {
+                Col1 = a.Name,
+                Col2 = a.Role,
+                Col3 = a.ExePath,
+                Tag = a
+            }));
+        }
+
+        DetailGrid.ItemsSource = rows;
     }
 
     private WorkplaceProfile? GetSelectedStartLayoutProfile(WorkplaceContext? context = null)
@@ -1945,74 +1932,126 @@ public partial class MainWindow : Window
             return;
         }
 
-        var dialog = new OpenFileDialog
-        {
-            Title = "App für Startlayout wählen",
-            Filter = "Programme (*.exe)|*.exe|Alle Dateien (*.*)|*.*",
-            CheckFileExists = true
-        };
-        if (dialog.ShowDialog(this) != true) return;
-
         var roles = profile.Roles.Keys.OrderBy(r => r, StringComparer.OrdinalIgnoreCase).ToList();
         if (roles.Count == 0) roles.Add("primary");
 
-        var role = PickRoleDialog(roles);
-        if (role is null) return;
+        var picked = PickInstalledAppDialog(roles);
+        if (picked is null) return;
 
         profile.Apps.Add(new StartLayoutApp
         {
-            Name = Path.GetFileNameWithoutExtension(dialog.FileName),
-            ExePath = dialog.FileName,
-            Role = role,
+            Name = picked.Value.App.Name,
+            ExePath = picked.Value.App.ExePath,
+            Role = picked.Value.Role,
             DelayMs = 1000,
             Maximize = true
         });
         _settings.StartLayout.LastProfileId = profile.Id;
         _settings.Save();
         RefreshStartLayoutPanel();
-        PanelBody.Text = $"App hinzugefügt: {Path.GetFileName(dialog.FileName)} → Rolle „{role}“.\n\n" +
+        PanelBody.Text = $"App hinzugefügt: {picked.Value.App.Name} → Rolle „{picked.Value.Role}“.\n\n" +
                          StartLayoutService.FormatDiscovery(context, _settings.StartLayout.Profiles);
+        MessageBox.Show(this,
+            $"„{picked.Value.App.Name}“ wurde der Rolle „{picked.Value.Role}“ zugeordnet.",
+            "KlarWin — App hinzugefügt",
+            MessageBoxButton.OK,
+            MessageBoxImage.Information);
     }
 
-    private string? PickRoleDialog(IReadOnlyList<string> roles)
+    private (InstalledAppEntry App, string Role)? PickInstalledAppDialog(IReadOnlyList<string> roles)
     {
+        var apps = InstalledAppsCatalogService.ListApps();
         var win = new Window
         {
-            Title = "Monitor-Rolle",
-            Width = 360,
-            Height = 220,
+            Title = "App wählen",
+            Width = 560,
+            Height = 520,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
             Owner = this,
-            ResizeMode = ResizeMode.NoResize
+            ResizeMode = ResizeMode.CanResize
         };
-        var stack = new StackPanel { Margin = new Thickness(16) };
-        stack.Children.Add(new TextBlock
+
+        var filter = new TextBox { Height = 32, Margin = new Thickness(0, 0, 0, 8) };
+        var rolePanel = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 8) };
+        rolePanel.Children.Add(new TextBlock
         {
-            Text = "Auf welchem Monitor soll die App erscheinen?",
-            TextWrapping = TextWrapping.Wrap,
-            Margin = new Thickness(0, 0, 0, 12)
+            Text = "Monitor-Rolle:",
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(0, 0, 8, 0)
         });
-        var box = new ComboBox { Height = 32 };
-        foreach (var r in roles)
-            box.Items.Add(r);
-        box.SelectedIndex = 0;
-        stack.Children.Add(box);
-        string? result = null;
+        var roleBox = new ComboBox { Width = 160, Height = 32 };
+        foreach (var r in roles) roleBox.Items.Add(r);
+        roleBox.SelectedIndex = 0;
+        rolePanel.Children.Add(roleBox);
+
+        var list = new ListBox { FontSize = 14 };
+        list.DisplayMemberPath = "Display";
+
+        void ApplyFilter()
+        {
+            var q = filter.Text?.Trim() ?? "";
+            list.ItemsSource = string.IsNullOrEmpty(q)
+                ? apps
+                : apps.Where(a =>
+                    a.Name.Contains(q, StringComparison.OrdinalIgnoreCase)
+                    || a.ExePath.Contains(q, StringComparison.OrdinalIgnoreCase)).ToList();
+        }
+
+        filter.TextChanged += (_, _) => ApplyFilter();
+        ApplyFilter();
+
+        (InstalledAppEntry App, string Role)? result = null;
+        var bottom = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            Margin = new Thickness(0, 8, 0, 0)
+        };
         var ok = new Button
         {
-            Content = "OK",
-            Width = 100,
-            Margin = new Thickness(0, 16, 0, 0),
-            HorizontalAlignment = HorizontalAlignment.Right,
-            IsDefault = true
+            Content = "Hinzufügen",
+            Width = 120,
+            Height = 34,
+            IsDefault = true,
+            Margin = new Thickness(0, 0, 8, 0)
         };
         ok.Click += (_, _) =>
         {
-            result = box.SelectedItem as string;
+            if (list.SelectedItem is not InstalledAppEntry app) return;
+            if (roleBox.SelectedItem is not string role) return;
+            result = (app, role);
             win.DialogResult = true;
         };
-        stack.Children.Add(ok);
-        win.Content = stack;
+        var cancel = new Button { Content = "Abbrechen", Width = 100, Height = 34, IsCancel = true };
+        bottom.Children.Add(ok);
+        bottom.Children.Add(cancel);
+
+        var grid = new Grid { Margin = new Thickness(16) };
+        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+
+        var hint = new TextBlock
+        {
+            Text = "App aus der Liste wählen (Startmenü/Desktop). Tippen zum Filtern, Rolle unten wählen.",
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 0, 0, 8),
+            Foreground = new SolidColorBrush(Color.FromRgb(0x4A, 0x5C, 0x54))
+        };
+        Grid.SetRow(hint, 0);
+        Grid.SetRow(filter, 1);
+        Grid.SetRow(rolePanel, 2);
+        Grid.SetRow(list, 3);
+        Grid.SetRow(bottom, 4);
+        grid.Children.Add(hint);
+        grid.Children.Add(filter);
+        grid.Children.Add(rolePanel);
+        grid.Children.Add(list);
+        grid.Children.Add(bottom);
+        win.Content = grid;
+
         return win.ShowDialog() == true ? result : null;
     }
 
@@ -2024,11 +2063,24 @@ public partial class MainWindow : Window
             return;
         }
 
+        _settings.StartLayout.ApplyOnLogin = true;
+        var autostartMsg = StartLayoutAutostartHelper.EnsureRegistered();
+        _settings.StartLayout.KlarWinAutostartManaged = true;
+        _settings.Save();
+
         var context = WorkplaceContextService.Capture();
         var profile = GetSelectedStartLayoutProfile(context);
         if (profile is null)
         {
-            PanelBody.Text = "Kein Profil vorhanden. Zuerst „Profil speichern“.";
+            MessageBox.Show(this, "Kein Profil vorhanden. Zuerst „Profil speichern“.",
+                "KlarWin — Startlayout", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        if (profile.Apps.Count == 0)
+        {
+            MessageBox.Show(this, "Dem Profil sind noch keine Apps zugeordnet.\nBitte „App hinzufügen“.",
+                "KlarWin — Startlayout", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
 
@@ -2041,10 +2093,18 @@ public partial class MainWindow : Window
             var log = await StartLayoutService.ApplyAsync(profile, context);
             PanelBody.Text = log + "\n\n" + StartLayoutService.FormatDiscovery(context, _settings.StartLayout.Profiles);
             RefreshStartLayoutPanel();
+
+            MessageBox.Show(this,
+                $"Layout „{profile.Name}“ wurde angewendet.\n\n{log}\n\n{autostartMsg}",
+                "KlarWin — Layout angewendet",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
         }
         catch (Exception ex)
         {
             PanelBody.Text = UserFriendlyErrors.Translate(ex);
+            MessageBox.Show(this, UserFriendlyErrors.Translate(ex), "KlarWin — Fehler",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
         }
         finally
         {

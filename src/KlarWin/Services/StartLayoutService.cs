@@ -141,8 +141,14 @@ public static class StartLayoutService
         sb.AppendLine($"· Monitore: {context.Monitors.Count}");
         foreach (var m in context.Monitors.OrderBy(x => x.X))
         {
-            var tag = m.IsPrimary ? " (Haupt)" : "";
-            sb.AppendLine($"  – {m.Name}{tag}: {m.Width}×{m.Height} @ ({m.X},{m.Y})");
+            var size = m.DiagonalInches > 0 ? $" · ca. {m.DiagonalInches:0.#}\"" : "";
+            var hz = m.RefreshRateHz > 0 ? $" · {m.RefreshRateHz} Hz" : "";
+            var serial = !string.IsNullOrWhiteSpace(m.Serial) && m.Serial != "0"
+                ? $" · S/N {m.Serial}"
+                : "";
+            var product = !string.IsNullOrWhiteSpace(m.ProductCode) ? $" · Produkt {m.ProductCode}" : "";
+            sb.AppendLine($"  – [{m.PositionLabel}] {m.ManufacturerDisplay} · {m.Name}");
+            sb.AppendLine($"    {m.Width}×{m.Height}{hz}{size} @ ({m.X},{m.Y}){product}{serial}");
             sb.AppendLine($"    ID: {m.Id}");
         }
 

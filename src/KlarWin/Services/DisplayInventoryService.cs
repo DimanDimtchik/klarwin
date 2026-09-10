@@ -6,6 +6,35 @@ namespace KlarWin.Services;
 
 public static class DisplayInventoryService
 {
+    private static readonly Dictionary<string, string> ManufacturerNames = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["SAM"] = "Samsung",
+        ["SNY"] = "Sony",
+        ["DEL"] = "Dell",
+        ["BNQ"] = "BenQ",
+        ["AOC"] = "AOC",
+        ["ACI"] = "Asus",
+        ["AUO"] = "AU Optronics",
+        ["BOE"] = "BOE (Laptop-Panel)",
+        ["CMN"] = "Chimei Innolux",
+        ["LGD"] = "LG Display",
+        ["SDC"] = "Samsung Display",
+        ["SHP"] = "Sharp",
+        ["HPN"] = "HP",
+        ["HWP"] = "HP",
+        ["LEN"] = "Lenovo",
+        ["VSC"] = "ViewSonic",
+        ["GSM"] = "LG",
+        ["PHL"] = "Philips",
+        ["MSI"] = "MSI",
+        ["XEC"] = "MiniFire / XEC",
+        ["IVM"] = "Iiyama",
+        ["ACR"] = "Acer",
+        ["APP"] = "Apple",
+        ["TSB"] = "Toshiba",
+        ["NCP"] = "NEC"
+    };
+
     public static IReadOnlyList<MonitorInfo> ReadMonitors()
     {
         var edid = ReadEdidMonitors();
@@ -29,23 +58,74 @@ public static class DisplayInventoryService
             var serial = ed?.Serial ?? "";
             var product = ed?.ProductCode ?? "";
             var id = BuildId(manufacturer, product, serial, name, screen.Width, screen.Height);
+            var hz = ReadRefreshRate(screen.DeviceName);
+            var diagIn = ed is { DiagonalCm: > 0 }
+                ? Math.Round(ed.DiagonalCm / 2.54, 1)
+                : 0;
 
             list.Add(new MonitorInfo
             {
                 Id = id,
                 Name = name,
                 Manufacturer = manufacturer,
+                ManufacturerDisplay = FriendlyManufacturer(manufacturer),
+                ProductCode = product,
                 Serial = serial,
                 Width = screen.Width,
                 Height = screen.Height,
                 X = screen.X,
                 Y = screen.Y,
                 IsPrimary = screen.IsPrimary,
-                DeviceName = screen.DeviceName
+                DeviceName = screen.DeviceName,
+                DiagonalInches = diagIn,
+                RefreshRateHz = hz
             });
         }
 
-        return list;
+        // Position labels left→right for distinction
+        var ordered = list.OrderBy(m => m.X).ThenBy(m => m.Y).ToList();
+        for (var i = 0; i < ordered.Count; i++)
+        {
+            var label = ordered.Count switch
+            {
+                1 => "Einzig",
+                2 => i == 0 ? "Links" : "Rechts",
+                _ when i == 0 => "Links",
+                _ when i == ordered.Count - 1 => "Rechts",
+                _ => $"Mitte {i}"
+            };
+            if (ordered[i].IsPrimary)
+                label = string.IsNullOrEmpty(label) ? "Haupt" : $"{label} · Haupt";
+
+            // replace with labeled copy
+            var m = ordered[i];
+            ordered[i] = new MonitorInfo
+            {
+                Id = m.Id,
+                Name = m.Name,
+                Manufacturer = m.Manufacturer,
+                ManufacturerDisplay = m.ManufacturerDisplay,
+                ProductCode = m.ProductCode,
+                Serial = m.Serial,
+                Width = m.Width,
+                Height = m.Height,
+                X = m.X,
+                Y = m.Y,
+                IsPrimary = m.IsPrimary,
+                DeviceName = m.DeviceName,
+                DiagonalInches = m.DiagonalInches,
+                RefreshRateHz = m.RefreshRateHz,
+                PositionLabel = label
+            };
+        }
+
+        return ordered;
+    }
+
+    public static string FriendlyManufacturer(string code)
+    {
+        if (string.IsNullOrWhiteSpace(code)) return "Unbekannt";
+        return ManufacturerNames.TryGetValue(code.Trim(), out var name) ? name : code.Trim();
     }
 
     public static string BuildFingerprint(IEnumerable<MonitorInfo> monitors) =>
@@ -81,6 +161,22 @@ public static class DisplayInventoryService
         }
 
         return -1;
+    }
+
+    private static int ReadRefreshRate(string deviceName)
+    {
+        try
+        {
+            var dm = new DevMode { dmSize = (short)Marshal.SizeOf<DevMode>() };
+            if (EnumDisplaySettings(deviceName, -1, ref dm))
+                return dm.dmDisplayFrequency;
+        }
+        catch
+        {
+            // optional
+        }
+
+        return 0;
     }
 
     private static List<ScreenRect> EnumScreens()
@@ -131,7 +227,7 @@ public static class DisplayInventoryService
                 var product = DecodeUshortArray(mo["ProductCodeID"] as ushort[]);
                 sizes.TryGetValue(inst, out var sz);
                 var diag = Math.Sqrt(sz.W * sz.W + sz.H * sz.H);
-                list.Add(new EdidMonitor(name, man, serial, product, diag));
+                list.Add(new EdidMonitor(name, man, serial, product, diag, inst));
             }
         }
         catch
@@ -155,7 +251,9 @@ public static class DisplayInventoryService
         return sb.ToString().Trim();
     }
 
-    private sealed record EdidMonitor(string Name, string Manufacturer, string Serial, string ProductCode, double DiagonalCm);
+    private sealed record EdidMonitor(
+        string Name, string Manufacturer, string Serial, string ProductCode, double DiagonalCm, string InstanceName);
+
     private sealed record ScreenRect(int X, int Y, int Width, int Height, bool IsPrimary, string DeviceName);
 
     private delegate bool MonitorEnumProc(IntPtr hMonitor, IntPtr hdcMonitor, IntPtr lprcMonitor, IntPtr dwData);
@@ -165,6 +263,9 @@ public static class DisplayInventoryService
 
     [DllImport("user32.dll", CharSet = CharSet.Auto)]
     private static extern bool GetMonitorInfo(IntPtr hMonitor, ref MonitorInfoEx lpmi);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern bool EnumDisplaySettings(string? lpszDeviceName, int iModeNum, ref DevMode lpDevMode);
 
     [StructLayout(LayoutKind.Sequential)]
     private struct Rect
@@ -181,6 +282,43 @@ public static class DisplayInventoryService
         public int dwFlags;
         [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)]
         public string szDevice;
+    }
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct DevMode
+    {
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)]
+        public string dmDeviceName;
+        public short dmSpecVersion;
+        public short dmDriverVersion;
+        public short dmSize;
+        public short dmDriverExtra;
+        public int dmFields;
+        public int dmPositionX;
+        public int dmPositionY;
+        public int dmDisplayOrientation;
+        public int dmDisplayFixedOutput;
+        public short dmColor;
+        public short dmDuplex;
+        public short dmYResolution;
+        public short dmTTOption;
+        public short dmCollate;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)]
+        public string dmFormName;
+        public short dmLogPixels;
+        public int dmBitsPerPel;
+        public int dmPelsWidth;
+        public int dmPelsHeight;
+        public int dmDisplayFlags;
+        public int dmDisplayFrequency;
+        public int dmICMMethod;
+        public int dmICMIntent;
+        public int dmMediaType;
+        public int dmDitherType;
+        public int dmReserved1;
+        public int dmReserved2;
+        public int dmPanningWidth;
+        public int dmPanningHeight;
     }
 }
 
