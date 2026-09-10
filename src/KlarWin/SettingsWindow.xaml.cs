@@ -234,6 +234,7 @@ public partial class SettingsWindow : Window
             AutostartBackup = _settings.AutostartBackup,
             NetworkDeviceNotes = _settings.NetworkDeviceNotes,
             LearnedMacVendors = _settings.LearnedMacVendors,
+            StartLayout = _settings.StartLayout,
             PromoPosition = _settings.PromoPosition,
             ShowPromoBanner = true
         };

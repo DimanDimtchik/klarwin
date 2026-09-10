@@ -13,6 +13,7 @@ public sealed class KlarWinSettings
     public Dictionary<string, AutostartBackupEntry> AutostartBackup { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public Dictionary<string, string> NetworkDeviceNotes { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public Dictionary<string, string> LearnedMacVendors { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    public StartLayoutSettings StartLayout { get; set; } = new();
 
     // Appearance
     public string BackgroundMode { get; set; } = "Gradient"; // Gradient | Solid | Image

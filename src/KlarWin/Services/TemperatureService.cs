@@ -86,7 +86,7 @@ public static class TemperatureService
             "KlarWin nutzt LibreHardwareMonitorLib 0.9.6 (PawnIO), nvidia-smi (GPU) und Windows-WMI. " +
             "„Temperatur-Diagnose“ zeigt, welche Quellen auf diesem PC funktionieren." +
             pawnHint +
-            "\n\nGrün = ok · Gelb = beobachten · Rot = kritisch";
+            "\n\nGrün = ok · Gelb = beobachten · Rot = auffällig";
     }
 
     private static void Merge(List<TemperatureSensor> target, IReadOnlyList<TemperatureSensor> source)

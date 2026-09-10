@@ -29,3 +29,9 @@ Produktseite: https://ganz-soft.de/klarwin/
 Netzwerk und KI-Last sind **zwei getrennte Kacheln**. Router-Daten über Standard-UPnP/IGD (nicht nur Fritz!Box); ohne UPnP bleiben PC-Netz und LAN-Nachbarn.
 
 Siehe Handbuch-PDF für alle zehn Kacheln und Sicherheitshinweise.
+
+## Planung / Recht (Entwurf)
+
+- [`docs/PLAN-Startlayout-Profile.md`](docs/PLAN-Startlayout-Profile.md) — geplante Erweiterung „Arbeitsplatz-Profile / Startlayout“
+- [`docs/RECHT-Name-KlarWin.md`](docs/RECHT-Name-KlarWin.md) — Vorabrecherche zum Namen (keine Rechtsberatung)
+- [`docs/HANDOFF-HP-LaserJet700.md`](docs/HANDOFF-HP-LaserJet700.md) — Übergabenotiz an Chat HP LaserJet700

@@ -42,7 +42,8 @@ public static class FeatureCatalog
     public static IReadOnlyList<CatalogFeature> Autostart { get; } =
     [
         new("Autostart-Einträge anzeigen", false),
-        new("Programme abmelden (HKLM)", true)
+        new("Programme abmelden (HKLM)", true),
+        new("Startlayout (optional aktivieren)", false)
     ];
 
     public static IReadOnlyList<CatalogFeature> Wipe { get; } =

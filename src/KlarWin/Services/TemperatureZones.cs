@@ -37,7 +37,7 @@ public static class TemperatureZones
     {
         HealthLevel.Ok => "In Ordnung",
         HealthLevel.Watch => "Beobachten",
-        HealthLevel.Critical => "Kritisch",
+        HealthLevel.Critical => "Auffällig",
         _ => "Unbekannt"
     };
 

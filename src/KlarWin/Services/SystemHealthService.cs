@@ -72,13 +72,13 @@ public static class SystemHealthService
         var known = categories.Where(c => c.Level != HealthLevel.Unknown).ToList();
         var overall = known.Count == 0
             ? HealthLevel.Unknown
-            : known.Max(c => c.Level);
+            : ComputeOverall(known);
 
         var overallSummary = overall switch
         {
             HealthLevel.Ok => "In Ordnung",
             HealthLevel.Watch => $"{hints.Count(h => h.Level >= HealthLevel.Watch)} Hinweis(e)",
-            HealthLevel.Critical => "Dringend prüfen",
+            HealthLevel.Critical => "Hinweis vorhanden",
             _ => isAdministrator ? "Teilweise unbekannt" : "Mit Adminrechten genauer"
         };
 
@@ -95,7 +95,7 @@ public static class SystemHealthService
             overallSummary,
             categories,
             hints.Take(6).ToList(),
-            "Automatische Einschätzung auf Basis verfügbarer Sensoren — ersetzt keine Fachdiagnose.");
+            "Grobe Einschätzung auf Basis verfügbarer Sensoren — keine sichere Vorhersage, ersetzt keine Fachdiagnose.");
     }
 
     public static string FormatTileSummary(SystemHealthReport report)
@@ -179,8 +179,8 @@ public static class SystemHealthService
                 level,
                 $"{group}: {celsius:0} °C",
                 level == HealthLevel.Critical
-                    ? "Mainboard/Chipset im kritischen Bereich — Belüftung, Staub und Umgebungstemperatur sofort prüfen. Langfristige Überhitzung kann Bauteile schädigen."
-                    : "Mainboard/Chipset außerhalb des grünen Bereichs — kann auf schlechte Belüftung oder hohe Umgebungstemperatur hindeuten. Lüfter und Kühlkörper prüfen.");
+                    ? "Mainboard/Chipset liegt im roten Bereich — das könnte auf Belüftung oder hohe Umgebungstemperatur hindeuten. Lüfter und Kühlkörper prüfen kann sinnvoll sein."
+                    : "Mainboard/Chipset außerhalb des grünen Bereichs — kann auf Belüftung oder Umgebungstemperatur hindeuten. Lüfter und Kühlkörper im Blick behalten.");
         }
 
         if (group == "CPU")
@@ -189,15 +189,15 @@ public static class SystemHealthService
                 level,
                 $"{sensorName}: {celsius:0} °C",
                 level == HealthLevel.Critical
-                    ? "CPU im kritischen Bereich — Drosselung oder Abschaltung möglich. Last reduzieren und Kühlsystem prüfen."
-                    : "CPU außerhalb des grünen Bereichs — Lüfter, Untergrund und ggf. Kühlprofil prüfen.");
+                    ? "CPU-Temperatur liegt im roten Bereich — es könnte zu Drosselung kommen. Last reduzieren und Kühlung prüfen kann helfen."
+                    : "CPU außerhalb des grünen Bereichs — Lüfter, Untergrund und ggf. Kühlprofil im Blick behalten.");
         }
 
         return new HealthHint(
             level,
             $"{sensorName}: {celsius:0} °C",
             level == HealthLevel.Critical
-                ? "GPU im kritischen Bereich — Last reduzieren, Lüfter und Treiber prüfen."
+                ? "GPU-Temperatur liegt im roten Bereich — Last reduzieren und Belüftung prüfen kann sinnvoll sein."
                 : "GPU im gelben Bereich — Belüftung und Auslastung im Blick behalten.");
     }
 
@@ -227,8 +227,8 @@ public static class SystemHealthService
                 level,
                 $"RAM: {ramPercent:0} %",
                 level == HealthLevel.Critical
-                    ? "Arbeitsspeicher fast voll — Programme schließen oder PC neu starten."
-                    : "Arbeitsspeicher hoch — unnötige Programme schließen."));
+                    ? "Arbeitsspeicher ist sehr hoch belegt — es könnte zu Verlangsamungen kommen. Programme schließen oder Neustart kann helfen."
+                    : "Arbeitsspeicher hoch — unnötige Programme schließen kann helfen."));
         }
     }
 
@@ -261,8 +261,8 @@ public static class SystemHealthService
                 level,
                 $"{snapshot.DiskName}: {usedPercent:0} % voll",
                 level == HealthLevel.Critical
-                    ? "Systemlaufwerk fast voll — Updates und Programme können scheitern. Speicher freigeben."
-                    : "Systemlaufwerk wird voll — rechtzeitig aufräumen."));
+                    ? "Systemlaufwerk ist fast voll — Updates und Programme könnten scheitern. Speicher freigeben kann sinnvoll sein."
+                    : "Systemlaufwerk wird voll — rechtzeitig aufräumen kann helfen."));
         }
     }
 
@@ -301,8 +301,8 @@ public static class SystemHealthService
                 level,
                 $"Akku: {battery.WearPercent} % Restkapazität",
                 battery.CycleCount is > 0
-                    ? $"Akku-Verschleiß spürbar ({battery.CycleCount} Ladezyklen) — Laufzeit kürzer. Backup und ggf. Austausch planen."
-                    : "Akku-Verschleiß spürbar — Laufzeit kürzer. Backup und ggf. Austausch planen."));
+                    ? $"Die gemessene Restkapazität ist etwas niedrig ({battery.CycleCount} Ladezyklen gemeldet) — unterwegs könnte die Laufzeit kürzer sein als früher."
+                    : "Die gemessene Restkapazität ist etwas niedrig — unterwegs könnte die Laufzeit kürzer sein als früher."));
         }
         else if (level == HealthLevel.Critical)
         {
@@ -310,8 +310,8 @@ public static class SystemHealthService
                 level,
                 $"Akku: {battery.WearPercent} % Restkapazität",
                 battery.CycleCount is > 0
-                    ? $"Akku stark abgenutzt ({battery.CycleCount} Ladezyklen) — Austausch empfohlen, besonders bei mobiler Nutzung."
-                    : "Akku stark abgenutzt — Austausch empfohlen, besonders bei mobiler Nutzung."));
+                    ? $"Die gemessene Restkapazität ist deutlich niedrig ({battery.CycleCount} Ladezyklen gemeldet) — es könnte sein, dass dieser Akku nur noch eine kürzere Laufzeit hat. Eventuell lohnt sich ein Check, besonders bei mobiler Nutzung."
+                    : "Die gemessene Restkapazität ist deutlich niedrig — es könnte sein, dass dieser Akku nur noch eine kürzere Laufzeit hat. Eventuell lohnt sich ein Check, besonders bei mobiler Nutzung."));
         }
         else if (battery.WearPercent is null && battery.ChargePercent is not null)
         {
@@ -358,7 +358,7 @@ public static class SystemHealthService
             hints.Add(new HealthHint(
                 HealthLevel.Critical,
                 $"SMART: {disk.Device}",
-                "Laufwerk meldet Ausfallrisiko — sofort Backup prüfen und Austausch planen."));
+                "SMART meldet ein mögliches Risiko — ein Backup zu prüfen kann sinnvoll sein."));
         }
 
         foreach (var disk in smart.Where(s => !s.PredictFailure && s.Level >= HealthLevel.Watch))
@@ -366,7 +366,7 @@ public static class SystemHealthService
             hints.Add(new HealthHint(
                 HealthLevel.Watch,
                 $"Laufwerk: {disk.Device}",
-                $"{disk.Detail} — Diagnose und Backup empfohlen."));
+                $"{disk.Detail} — genauer prüfen und ein Backup in Betracht ziehen kann sinnvoll sein."));
         }
     }
 
@@ -436,6 +436,23 @@ public static class SystemHealthService
         }
 
         return matches.OrderByDescending(s => s.Celsius).First();
+    }
+
+    private static HealthLevel ComputeOverall(IReadOnlyList<HealthCategory> known)
+    {
+        var max = known.Max(c => c.Level);
+        if (max != HealthLevel.Critical)
+        {
+            return max;
+        }
+
+        var criticalCount = known.Count(c => c.Level == HealthLevel.Critical);
+        if (criticalCount == 1 && known.Count(c => c.Level == HealthLevel.Ok) >= known.Count - 1)
+        {
+            return HealthLevel.Watch;
+        }
+
+        return max;
     }
 
     private static HealthLevel MaxLevel(HealthLevel a, HealthLevel b)

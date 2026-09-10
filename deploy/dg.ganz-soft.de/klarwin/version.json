@@ -1,6 +1,6 @@
 {
-  "version": "1.3.42",
+  "version": "1.3.46",
   "url": "https://ganz-soft.de/klarwin/KlarWin-Setup.zip",
-  "notes": "Akku-Verlauf, 24h-Leistungsverlauf, Diagnose-Log klarwin.log, Deploy-Fixes.",
-  "published": "2026-09-02"
+  "notes": "Startlayout (optional): Arbeitsplatz-Profile, Apps auf Monitore, Opt-in und Autostart.",
+  "published": "2026-09-10"
 }

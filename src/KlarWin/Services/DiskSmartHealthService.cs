@@ -34,7 +34,7 @@ public static class DiskSmartHealthService
                 var label = SimplifyInstanceName(instance);
                 var detail = predict
                     ? string.IsNullOrWhiteSpace(reason)
-                        ? "SMART meldet Ausfallrisiko"
+                        ? "SMART meldet mögliches Risiko"
                         : $"SMART: {reason}"
                     : "SMART: kein Ausfallrisiko gemeldet";
                 results.Add(new DiskSmartStatus(

@@ -68,7 +68,37 @@ public partial class App : Application
         var main = new MainWindow();
         main.Show();
 
+        if (KlarWinSettings.Load() is { StartLayout: { Enabled: true, ApplyOnLogin: true } })
+        {
+            _ = ApplyStartLayoutOnLoginAsync();
+        }
+
         base.OnStartup(e);
+    }
+
+    private static async Task ApplyStartLayoutOnLoginAsync()
+    {
+        try
+        {
+            await Task.Delay(2500);
+            var settings = KlarWinSettings.Load();
+            if (!settings.StartLayout.Enabled
+                || !settings.StartLayout.ApplyOnLogin
+                || settings.StartLayout.Profiles.Count == 0)
+                return;
+
+            var context = WorkplaceContextService.Capture();
+            var profile = StartLayoutService.SelectBestProfile(settings.StartLayout.Profiles, context);
+            if (profile is null || profile.Apps.Count == 0) return;
+
+            DiagnosticLogService.Info($"Startlayout automatisch: {profile.Name}");
+            var log = await StartLayoutService.ApplyAsync(profile, context);
+            DiagnosticLogService.Info(log);
+        }
+        catch (Exception ex)
+        {
+            DiagnosticLogService.Error("Startlayout beim Login", ex);
+        }
     }
 
     protected override void OnExit(ExitEventArgs e)

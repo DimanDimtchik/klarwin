@@ -76,7 +76,7 @@ public static class BatteryHistoryService
             < 0 => $"{delta}",
             _ => "±0"
         };
-        return $"Verlauf: vor {days} Tag(en) {baseline.CapacityPercent} % → jetzt {current} % ({direction} Punkte).";
+        return $"Verlauf: vor {days} Tag(en) {baseline.CapacityPercent} % → jetzt {current} % ({direction} Punkte). Das ist nur ein grober Vergleich — einzelne Messungen können schwanken.";
     }
 
     public static IReadOnlyList<BatteryHistoryEntry> ReadEntries()
