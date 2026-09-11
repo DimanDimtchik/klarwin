@@ -106,7 +106,7 @@ public partial class MainWindow : Window
         _tileButtons =
         [
             TileClean, TileSpeed, TilePerf, TileOverlay, TileAutostart, TileWipe,
-            TileRecover, TileKeys, TileNetwork, TileAi, TileUpdate, TileBackup, TileUsb
+            TileRecover, TileKeys, TileNetwork, TileAi, TileUpdate, TileBackup, TileUsb, TileTransfer
         ];
         _timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
         _timer.Tick += (_, _) => _ = RefreshLiveAsync();
@@ -157,6 +157,7 @@ public partial class MainWindow : Window
         FeatureListUi.Fill(TileUpdateFeatures, FeatureCatalog.Updates);
         FeatureListUi.Fill(TileBackupFeatures, FeatureCatalog.Backup);
         FeatureListUi.Fill(TileUsbFeatures, FeatureCatalog.UsbStick);
+        FeatureListUi.Fill(TileTransferFeatures, FeatureCatalog.TransferFolders);
     }
 
     private void UpdateAdminUi()
@@ -437,6 +438,7 @@ public partial class MainWindow : Window
             "software-updates" => TileUpdate,
             "backup" => TileBackup,
             "usb" => TileUsb,
+            "transfer" => TileTransfer,
             _ => null
         };
 
@@ -1487,6 +1489,172 @@ public partial class MainWindow : Window
         RefreshUsbDriveList();
     });
 
+    private void OnTransferFoldersClick(object sender, RoutedEventArgs e) => SafeTile(() =>
+    {
+        _mode = "transfer";
+        ResetPanelChrome();
+        PanelTitle.Text = "Up-/Download-Ziele";
+        PrimaryAction.Content = "Ordner öffnen";
+        SecondaryAction.Content = "Ziel hinzufügen";
+        SecondaryAction.Visibility = Visibility.Visible;
+        TertiaryAction.Content = "Ziel entfernen";
+        TertiaryAction.Visibility = Visibility.Visible;
+        QuaternaryAction.Content = "Schnellzugriff";
+        QuaternaryAction.Visibility = Visibility.Visible;
+        RefreshTransferFolderList();
+    });
+
+    private void RefreshTransferFolderList()
+    {
+        SetDetailGridColumns("Name", "Pfad", "Status", 180, 360, 100);
+        var folders = _settings.TransferFolders;
+        if (folders.Count == 0)
+        {
+            DetailGrid.Visibility = Visibility.Collapsed;
+            DetailGrid.ItemsSource = null;
+            PanelBody.Text =
+                "Noch keine Ziele. „Ziel hinzufügen“ legt einen Ordner an (Name frei wählbar — z. B. für Buchhaltung, Personal, Projekte).\n\n" +
+                "Vor dem Hoch- oder Herunterladen in einer Cloud-App den passenden Eintrag öffnen — der Explorer startet dann in diesem Ordner.";
+            return;
+        }
+
+        ShowDetailRows(folders.Select(f => new DetailRow
+        {
+            Col1 = f.Name,
+            Col2 = f.Path,
+            Col3 = TransferFolderService.StatusLabel(f),
+            Tag = f
+        }));
+        PanelBody.Text =
+            $"{folders.Count} Ziel(e). Eintrag wählen → „Ordner öffnen“, dann in der Web-App hoch- oder herunterladen.\n\n" +
+            "„Schnellzugriff“ heftet den Ordner zusätzlich im Windows-Explorer an.";
+    }
+
+    private TransferFolderTarget? GetSelectedTransferFolder()
+    {
+        if (DetailGrid.SelectedItem is DetailRow { Tag: TransferFolderTarget tagged })
+            return tagged;
+        return null;
+    }
+
+    private void AddTransferFolderTarget()
+    {
+        var dialog = new OpenFolderDialog
+        {
+            Title = "Zielordner für Up-/Download wählen"
+        };
+        if (dialog.ShowDialog(this) != true || string.IsNullOrWhiteSpace(dialog.FolderName))
+            return;
+
+        var path = dialog.FolderName;
+        var suggested = TransferFolderService.SuggestNameFromPath(path);
+        var name = PromptTransferFolderName(suggested);
+        if (string.IsNullOrWhiteSpace(name)) return;
+
+        _settings.TransferFolders.Add(new TransferFolderTarget
+        {
+            Name = name.Trim(),
+            Path = path
+        });
+        _settings.Save();
+        RefreshTransferFolderList();
+        PanelBody.Text = $"Ziel „{name.Trim()}“ hinzugefügt.\n\n" +
+                         "Vor dem nächsten Upload/Download diesen Eintrag öffnen.";
+    }
+
+    private string? PromptTransferFolderName(string initial)
+    {
+        var win = new Window
+        {
+            Title = "Name für das Ziel",
+            Width = 420,
+            Height = 170,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Owner = this,
+            ResizeMode = ResizeMode.NoResize
+        };
+        var stack = new StackPanel { Margin = new Thickness(16) };
+        stack.Children.Add(new TextBlock
+        {
+            Text = "Anzeigename (frei wählbar):",
+            Margin = new Thickness(0, 0, 0, 6)
+        });
+        var box = new TextBox { Text = initial, Height = 32 };
+        stack.Children.Add(box);
+        string? result = null;
+        var ok = new Button
+        {
+            Content = "Speichern",
+            Width = 120,
+            Margin = new Thickness(0, 12, 0, 0),
+            HorizontalAlignment = HorizontalAlignment.Right,
+            IsDefault = true
+        };
+        ok.Click += (_, _) =>
+        {
+            if (string.IsNullOrWhiteSpace(box.Text)) return;
+            result = box.Text.Trim();
+            win.DialogResult = true;
+        };
+        stack.Children.Add(ok);
+        win.Content = stack;
+        return win.ShowDialog() == true ? result : null;
+    }
+
+    private void OpenSelectedTransferFolder()
+    {
+        var target = GetSelectedTransferFolder();
+        if (target is null)
+        {
+            MessageBox.Show(this, "Bitte zuerst ein Ziel in der Liste wählen.", "KlarWin — Up-/Download",
+                MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var (ok, message) = TransferFolderService.OpenInExplorer(target.Path);
+        PanelBody.Text = message;
+        if (!ok) RefreshTransferFolderList();
+    }
+
+    private void RemoveSelectedTransferFolder()
+    {
+        var target = GetSelectedTransferFolder();
+        if (target is null)
+        {
+            MessageBox.Show(this, "Bitte zuerst ein Ziel in der Liste wählen.", "KlarWin — Up-/Download",
+                MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var answer = MessageBox.Show(this,
+            $"Ziel „{target.Name}“ aus der Liste entfernen?\n\nDer Ordner auf der Festplatte bleibt erhalten.",
+            "KlarWin — Ziel entfernen",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Question);
+        if (answer != MessageBoxResult.Yes) return;
+
+        _settings.TransferFolders.RemoveAll(f => f.Id == target.Id);
+        _settings.Save();
+        RefreshTransferFolderList();
+    }
+
+    private void PinSelectedTransferFolder()
+    {
+        var target = GetSelectedTransferFolder();
+        if (target is null)
+        {
+            MessageBox.Show(this, "Bitte zuerst ein Ziel in der Liste wählen.", "KlarWin — Up-/Download",
+                MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var (ok, message) = TransferFolderService.PinToQuickAccess(target.Path);
+        PanelBody.Text = ok
+            ? $"„{target.Name}“: {message}"
+            : message;
+        if (!ok) RefreshTransferFolderList();
+    }
+
     private void OnOverlayClick(object sender, RoutedEventArgs e) => SafeTile(() =>
     {
         _mode = "overlay";
@@ -1628,7 +1796,7 @@ public partial class MainWindow : Window
             "Startlayout ist aktiviert.\n" +
             autostartMsg + "\n\n" +
             "1) „Profil speichern“ für diesen Arbeitsplatz\n" +
-            "2) „App hinzufügen“ (Rolle primary / left / right)\n" +
+            "2) „App hinzufügen“ (Monitor wählen: z. B. Dell / Samsung / MiniFire)\n" +
             "3) „Layout anwenden“ testen\n\n" +
             StartLayoutService.FormatDiscovery(
                 WorkplaceContextService.Capture(), _settings.StartLayout.Profiles);
@@ -1897,9 +2065,8 @@ public partial class MainWindow : Window
             if (answer == MessageBoxResult.Cancel) return;
             if (answer == MessageBoxResult.Yes)
             {
-                var updated = StartLayoutService.CreateProfileFromContext(existing.Name, context);
+                var updated = StartLayoutService.CreateProfileFromContext(existing.Name, context, existing);
                 updated.Id = existing.Id;
-                updated.Apps = existing.Apps;
                 var idx = _settings.StartLayout.Profiles.FindIndex(p => p.Id == existing.Id);
                 if (idx >= 0) _settings.StartLayout.Profiles[idx] = updated;
                 _settings.StartLayout.LastProfileId = updated.Id;
@@ -1918,7 +2085,7 @@ public partial class MainWindow : Window
         RefreshStartLayoutPanel();
         PanelBody.Text = $"Profil „{profile.Name}“ gespeichert.\n\n" +
                          StartLayoutService.FormatDiscovery(context, _settings.StartLayout.Profiles) +
-                         "\n\nAls Nächstes „App hinzufügen“ (z. B. BlueMail → primary, Cursor → left, Chrome → right).";
+                         "\n\nAls Nächstes „App hinzufügen“ und den Monitor wählen (z. B. Laptop, MiniFire, Samsung).";
     }
 
     private void AddAppToStartLayoutProfile()
@@ -1932,8 +2099,12 @@ public partial class MainWindow : Window
             return;
         }
 
-        var roles = profile.Roles.Keys.OrderBy(r => r, StringComparer.OrdinalIgnoreCase).ToList();
-        if (roles.Count == 0) roles.Add("primary");
+        // Migrate legacy primary/left/right → Dell/Samsung/MiniFire style names
+        StartLayoutService.SyncRolesToMonitors(profile, context);
+        _settings.Save();
+
+        var roles = profile.Roles.Keys.ToList();
+        if (roles.Count == 0) roles.Add("Laptop");
 
         var picked = PickInstalledAppDialog(roles);
         if (picked is null) return;
@@ -1949,10 +2120,10 @@ public partial class MainWindow : Window
         _settings.StartLayout.LastProfileId = profile.Id;
         _settings.Save();
         RefreshStartLayoutPanel();
-        PanelBody.Text = $"App hinzugefügt: {picked.Value.App.Name} → Rolle „{picked.Value.Role}“.\n\n" +
+        PanelBody.Text = $"App hinzugefügt: {picked.Value.App.Name} → {picked.Value.Role}.\n\n" +
                          StartLayoutService.FormatDiscovery(context, _settings.StartLayout.Profiles);
         MessageBox.Show(this,
-            $"„{picked.Value.App.Name}“ wurde der Rolle „{picked.Value.Role}“ zugeordnet.",
+            $"„{picked.Value.App.Name}“ → Monitor „{picked.Value.Role}“.",
             "KlarWin — App hinzugefügt",
             MessageBoxButton.OK,
             MessageBoxImage.Information);
@@ -1960,12 +2131,11 @@ public partial class MainWindow : Window
 
     private (InstalledAppEntry App, string Role)? PickInstalledAppDialog(IReadOnlyList<string> roles)
     {
-        var apps = InstalledAppsCatalogService.ListApps();
         var win = new Window
         {
             Title = "App wählen",
-            Width = 560,
-            Height = 520,
+            Width = 620,
+            Height = 560,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
             Owner = this,
             ResizeMode = ResizeMode.CanResize
@@ -1975,31 +2145,16 @@ public partial class MainWindow : Window
         var rolePanel = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 8) };
         rolePanel.Children.Add(new TextBlock
         {
-            Text = "Monitor-Rolle:",
+            Text = "Monitor:",
             VerticalAlignment = VerticalAlignment.Center,
             Margin = new Thickness(0, 0, 8, 0)
         });
-        var roleBox = new ComboBox { Width = 160, Height = 32 };
+        var roleBox = new ComboBox { MinWidth = 200, Height = 32 };
         foreach (var r in roles) roleBox.Items.Add(r);
         roleBox.SelectedIndex = 0;
         rolePanel.Children.Add(roleBox);
 
-        var list = new ListBox { FontSize = 14 };
-        list.DisplayMemberPath = "Display";
-
-        void ApplyFilter()
-        {
-            var q = filter.Text?.Trim() ?? "";
-            list.ItemsSource = string.IsNullOrEmpty(q)
-                ? apps
-                : apps.Where(a =>
-                    a.Name.Contains(q, StringComparison.OrdinalIgnoreCase)
-                    || a.ExePath.Contains(q, StringComparison.OrdinalIgnoreCase)).ToList();
-        }
-
-        filter.TextChanged += (_, _) => ApplyFilter();
-        ApplyFilter();
-
+        var list = new ListBox { FontSize = 14, DisplayMemberPath = "Display" };
         (InstalledAppEntry App, string Role)? result = null;
         var bottom = new StackPanel
         {
@@ -2035,7 +2190,7 @@ public partial class MainWindow : Window
 
         var hint = new TextBlock
         {
-            Text = "App aus der Liste wählen (Startmenü/Desktop). Tippen zum Filtern, Rolle unten wählen.",
+            Text = "Programme werden geladen (Startmenü, Desktop, Installationen) …",
             TextWrapping = TextWrapping.Wrap,
             Margin = new Thickness(0, 0, 0, 8),
             Foreground = new SolidColorBrush(Color.FromRgb(0x4A, 0x5C, 0x54))
@@ -2051,6 +2206,33 @@ public partial class MainWindow : Window
         grid.Children.Add(list);
         grid.Children.Add(bottom);
         win.Content = grid;
+
+        IReadOnlyList<InstalledAppEntry> apps;
+        try
+        {
+            apps = InstalledAppsCatalogService.ListApps();
+        }
+        catch
+        {
+            apps = [];
+        }
+
+        hint.Text = apps.Count == 0
+            ? "Keine Programme gefunden."
+            : $"{apps.Count} Programme gefunden. Tippen zum Filtern, dann Monitor wählen und Hinzufügen.";
+
+        void ApplyFilter()
+        {
+            var q = filter.Text?.Trim() ?? "";
+            list.ItemsSource = string.IsNullOrEmpty(q)
+                ? apps
+                : apps.Where(a =>
+                    a.Name.Contains(q, StringComparison.OrdinalIgnoreCase)
+                    || a.ExePath.Contains(q, StringComparison.OrdinalIgnoreCase)).ToList();
+        }
+
+        filter.TextChanged += (_, _) => ApplyFilter();
+        ApplyFilter();
 
         return win.ShowDialog() == true ? result : null;
     }
@@ -2553,6 +2735,12 @@ public partial class MainWindow : Window
             return;
         }
 
+        if (_mode == "transfer")
+        {
+            PinSelectedTransferFolder();
+            return;
+        }
+
         if (_mode == "startlayout")
         {
             if (!_settings.StartLayout.Enabled)
@@ -2605,6 +2793,10 @@ public partial class MainWindow : Window
         else if (_mode == "keys")
         {
             ExportKeysHtml();
+        }
+        else if (_mode == "transfer")
+        {
+            RemoveSelectedTransferFolder();
         }
     }
 
@@ -2740,6 +2932,9 @@ public partial class MainWindow : Window
                 break;
             case "usb":
                 ApplyUsbFormat();
+                break;
+            case "transfer":
+                OpenSelectedTransferFolder();
                 break;
         }
     }
@@ -2897,6 +3092,9 @@ public partial class MainWindow : Window
                 break;
             case "usb":
                 RefreshUsbDriveList();
+                break;
+            case "transfer":
+                AddTransferFolderTarget();
                 break;
         }
     }

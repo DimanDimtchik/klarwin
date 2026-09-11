@@ -99,4 +99,11 @@ public static class FeatureCatalog
         new("Linux/ext4-Stick unter Windows nutzbar machen", false),
         new("Windows-ISO automatisch laden", false)
     ];
+
+    public static IReadOnlyList<CatalogFeature> TransferFolders { get; } =
+    [
+        new("Eigene Zielordner anlegen", false),
+        new("Vor Upload/Download öffnen", false),
+        new("Optional: Schnellzugriff anheften", false)
+    ];
 }

@@ -364,6 +364,17 @@
                         </StackPanel>
                     </StackPanel>
                 </Button>
+                <Button x:Name="TileTransfer" Style="{StaticResource TileButton}" Click="OnTransferFoldersClick">
+                    <StackPanel>
+                        <TextBlock FontFamily="Bahnschrift" FontSize="13" Foreground="#8C6239" Text="14  Transfer"/>
+                        <TextBlock FontFamily="Bahnschrift" FontSize="28" Margin="0,8,0,6" Text="Up-/Download"/>
+                        <StackPanel x:Name="TileTransferFeatures" Margin="0,2,0,0"/>
+                        <StackPanel Margin="0,8,0,0">
+                            <TextBlock FontSize="11" Foreground="#4A5C54" TextWrapping="Wrap"
+                                       Text="Eigene Zielordner — vor dem Dateidialog öffnen."/>
+                        </StackPanel>
+                    </StackPanel>
+                </Button>
             </UniformGrid>
         </ScrollViewer>
 

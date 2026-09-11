@@ -14,6 +14,8 @@ public sealed class KlarWinSettings
     public Dictionary<string, string> NetworkDeviceNotes { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public Dictionary<string, string> LearnedMacVendors { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public StartLayoutSettings StartLayout { get; set; } = new();
+    /// <summary>User-defined upload/download target folders (generic labels + paths).</summary>
+    public List<TransferFolderTarget> TransferFolders { get; set; } = [];
 
     // Appearance
     public string BackgroundMode { get; set; } = "Gradient"; // Gradient | Solid | Image

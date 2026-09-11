@@ -6,21 +6,13 @@ namespace KlarWin.Services;
 
 public static class StartLayoutService
 {
-    public static WorkplaceProfile CreateProfileFromContext(string name, WorkplaceContext context)
+    public static WorkplaceProfile CreateProfileFromContext(
+        string name,
+        WorkplaceContext context,
+        WorkplaceProfile? previous = null)
     {
         var monitors = context.Monitors.OrderBy(m => m.X).ThenBy(m => m.Y).ToList();
-        var roles = new Dictionary<string, WorkplaceRoleRule>(StringComparer.OrdinalIgnoreCase)
-        {
-            ["primary"] = new WorkplaceRoleRule { Match = "primary" }
-        };
-
-        var nonPrimary = monitors.Where(m => !m.IsPrimary).OrderBy(m => m.X).ToList();
-        if (nonPrimary.Count >= 1)
-            roles["left"] = new WorkplaceRoleRule { Match = $"id:{nonPrimary[0].Id}" };
-        if (nonPrimary.Count >= 2)
-            roles["right"] = new WorkplaceRoleRule { Match = $"id:{nonPrimary[1].Id}" };
-        else if (nonPrimary.Count == 1 && monitors.Count == 2)
-            roles["right"] = new WorkplaceRoleRule { Match = $"id:{nonPrimary[0].Id}" };
+        var roles = BuildMonitorRoles(monitors);
 
         var triggers = new List<string>();
         if (!string.IsNullOrWhiteSpace(context.WifiSsid))
@@ -28,14 +20,144 @@ public static class StartLayoutService
         if (!string.IsNullOrWhiteSpace(context.Gateway))
             triggers.Add($"Gateway:{context.Gateway}");
 
+        var apps = previous?.Apps is { Count: > 0 }
+            ? RemapAppsToRoles(previous, roles, context)
+            : [];
+
         return new WorkplaceProfile
         {
             Name = name,
             NetworkTriggers = triggers,
             MonitorFingerprints = monitors.Select(m => m.Id).ToList(),
             Roles = roles,
-            Apps = []
+            Apps = apps
         };
+    }
+
+    /// <summary>
+    /// Roles named after hardware (Dell / Samsung / MiniFire), ordered left→right.
+    /// Avoids confusing primary/left/right when the laptop is not in the center.
+    /// </summary>
+    public static Dictionary<string, WorkplaceRoleRule> BuildMonitorRoles(IReadOnlyList<MonitorInfo> monitors)
+    {
+        var roles = new Dictionary<string, WorkplaceRoleRule>(StringComparer.OrdinalIgnoreCase);
+        var used = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var m in monitors.OrderBy(x => x.X).ThenBy(x => x.Y))
+        {
+            var key = BuildUniqueRoleKey(m, used);
+            used.Add(key);
+            roles[key] = new WorkplaceRoleRule { Match = $"id:{m.Id}" };
+        }
+
+        if (roles.Count == 0)
+            roles["Laptop"] = new WorkplaceRoleRule { Match = "primary" };
+
+        return roles;
+    }
+
+    /// <summary>Ensure profile roles match current monitors; remaps existing apps.</summary>
+    public static void SyncRolesToMonitors(WorkplaceProfile profile, WorkplaceContext context)
+    {
+        var fresh = CreateProfileFromContext(profile.Name, context, profile);
+        profile.Roles = fresh.Roles;
+        profile.Apps = fresh.Apps;
+        profile.MonitorFingerprints = fresh.MonitorFingerprints;
+        profile.NetworkTriggers = fresh.NetworkTriggers;
+    }
+
+    public static string FriendlyRoleLabel(MonitorInfo m)
+    {
+        var mfg = (m.ManufacturerDisplay ?? "").Trim();
+        if (mfg.Contains("MiniFire", StringComparison.OrdinalIgnoreCase))
+            return "MiniFire";
+        if (mfg.Contains("Laptop", StringComparison.OrdinalIgnoreCase)
+            || mfg.StartsWith("BOE", StringComparison.OrdinalIgnoreCase))
+            return "Laptop";
+
+        if (!string.IsNullOrWhiteSpace(mfg) && !mfg.Equals("Unbekannt", StringComparison.OrdinalIgnoreCase))
+        {
+            var shortMfg = mfg;
+            if (shortMfg.Contains('('))
+                shortMfg = shortMfg.Split('(')[0].Trim();
+            if (shortMfg.Contains('/'))
+                shortMfg = shortMfg.Split('/')[0].Trim();
+            if (!string.IsNullOrWhiteSpace(shortMfg))
+                return shortMfg;
+        }
+
+        var name = (m.Name ?? "").Trim();
+        if (!string.IsNullOrWhiteSpace(name) && name is not ("Hauptanzeige" or "Monitor"))
+            return name.Length <= 28 ? name : name[..28].Trim();
+
+        return m.IsPrimary ? "Hauptmonitor" : "Monitor";
+    }
+
+    private static string BuildUniqueRoleKey(MonitorInfo m, HashSet<string> used)
+    {
+        var baseKey = FriendlyRoleLabel(m);
+        if (!used.Contains(baseKey)) return baseKey;
+
+        // Two same brands: prefer model / product code
+        var model = !string.IsNullOrWhiteSpace(m.Name) && m.Name is not ("Hauptanzeige" or "Monitor")
+            ? m.Name.Trim()
+            : (!string.IsNullOrWhiteSpace(m.ProductCode) ? m.ProductCode.Trim() : "");
+        if (!string.IsNullOrWhiteSpace(model))
+        {
+            var withModel = $"{baseKey} {model}";
+            if (withModel.Length > 36) withModel = withModel[..36].Trim();
+            if (!used.Contains(withModel)) return withModel;
+        }
+
+        var n = 2;
+        while (used.Contains($"{baseKey} {n}")) n++;
+        return $"{baseKey} {n}";
+    }
+
+    private static List<StartLayoutApp> RemapAppsToRoles(
+        WorkplaceProfile previous,
+        Dictionary<string, WorkplaceRoleRule> newRoles,
+        WorkplaceContext context)
+    {
+        var idToRole = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (role, rule) in newRoles)
+        {
+            var match = rule.Match ?? "";
+            if (match.StartsWith("id:", StringComparison.OrdinalIgnoreCase))
+                idToRole[match[3..].Trim()] = role;
+        }
+
+        var result = new List<StartLayoutApp>();
+        foreach (var app in previous.Apps)
+        {
+            var copy = new StartLayoutApp
+            {
+                Name = app.Name,
+                ExePath = app.ExePath,
+                Arguments = app.Arguments,
+                DelayMs = app.DelayMs,
+                Maximize = app.Maximize,
+                Role = app.Role
+            };
+
+            // Already matches a new role key
+            if (newRoles.ContainsKey(app.Role))
+            {
+                result.Add(copy);
+                continue;
+            }
+
+            var mon = ResolveRole(previous, app.Role, context);
+            if (mon is not null && idToRole.TryGetValue(mon.Id, out var mapped))
+                copy.Role = mapped;
+            else if (newRoles.ContainsKey("Laptop"))
+                copy.Role = "Laptop";
+            else
+                copy.Role = newRoles.Keys.First();
+
+            result.Add(copy);
+        }
+
+        return result;
     }
 
     public static WorkplaceProfile? SelectBestProfile(IEnumerable<WorkplaceProfile> profiles, WorkplaceContext context)
@@ -115,7 +237,9 @@ public static class StartLayoutService
             var needle = match[5..].Trim();
             return context.Monitors.FirstOrDefault(m =>
                 m.Name.Contains(needle, StringComparison.OrdinalIgnoreCase)
-                || m.Id.Contains(needle, StringComparison.OrdinalIgnoreCase));
+                || m.ManufacturerDisplay.Contains(needle, StringComparison.OrdinalIgnoreCase)
+                || m.Id.Contains(needle, StringComparison.OrdinalIgnoreCase)
+                || FriendlyRoleLabel(m).Contains(needle, StringComparison.OrdinalIgnoreCase));
         }
 
         if (match.StartsWith("index:", StringComparison.OrdinalIgnoreCase)
