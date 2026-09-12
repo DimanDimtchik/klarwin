@@ -1520,7 +1520,7 @@ public partial class MainWindow : Window
         PrimaryAction.Visibility = Visibility.Visible;
         SecondaryAction.Content = "Ziel hinzufügen";
         SecondaryAction.Visibility = Visibility.Visible;
-        TertiaryAction.Content = "Ziel entfernen";
+        TertiaryAction.Content = "Bearbeiten";
         TertiaryAction.Visibility = Visibility.Visible;
         QuaternaryAction.Content = "Schnellzugriff";
         QuaternaryAction.Visibility = Visibility.Visible;
@@ -1674,6 +1674,127 @@ public partial class MainWindow : Window
         RefreshTransferFolderList();
         PanelBody.Text = $"Ziel „{name.Trim()}“ hinzugefügt.\n\n" +
                          "Vor dem nächsten Upload/Download diesen Eintrag öffnen.";
+    }
+
+    private void EditSelectedTransferFolder()
+    {
+        var target = GetSelectedTransferFolder();
+        if (target is null)
+        {
+            MessageBox.Show(this, "Bitte zuerst ein Ziel in der Liste wählen.", "KlarWin — Up-/Download",
+                MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var win = new Window
+        {
+            Title = "Ziel bearbeiten",
+            Width = 520,
+            Height = 260,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Owner = this,
+            ResizeMode = ResizeMode.NoResize
+        };
+        var stack = new StackPanel { Margin = new Thickness(16) };
+        stack.Children.Add(new TextBlock { Text = "Name:", Margin = new Thickness(0, 0, 0, 4) });
+        var nameBox = new TextBox { Text = target.Name, Height = 32, Margin = new Thickness(0, 0, 0, 10) };
+        stack.Children.Add(nameBox);
+        stack.Children.Add(new TextBlock { Text = "Pfad:", Margin = new Thickness(0, 0, 0, 4) });
+        var pathRow = new DockPanel { Margin = new Thickness(0, 0, 0, 12) };
+        var browse = new Button
+        {
+            Content = "Ordner …",
+            Width = 100,
+            Height = 32,
+            Margin = new Thickness(8, 0, 0, 0)
+        };
+        DockPanel.SetDock(browse, Dock.Right);
+        var pathBox = new TextBox { Text = target.Path, Height = 32, VerticalContentAlignment = VerticalAlignment.Center };
+        browse.Click += (_, _) =>
+        {
+            var dialog = new OpenFolderDialog
+            {
+                Title = "Zielordner wählen",
+                InitialDirectory = TransferFolderService.DirectoryExists(pathBox.Text) ? pathBox.Text : ""
+            };
+            if (dialog.ShowDialog(this) == true && !string.IsNullOrWhiteSpace(dialog.FolderName))
+                pathBox.Text = dialog.FolderName;
+        };
+        pathRow.Children.Add(browse);
+        pathRow.Children.Add(pathBox);
+        stack.Children.Add(pathRow);
+
+        var buttons = new DockPanel();
+        var delete = new Button
+        {
+            Content = "Löschen",
+            Width = 100,
+            Height = 34,
+            HorizontalAlignment = HorizontalAlignment.Left
+        };
+        DockPanel.SetDock(delete, Dock.Left);
+        delete.Click += (_, _) =>
+        {
+            var answer = MessageBox.Show(win,
+                $"Ziel „{target.Name}“ wirklich entfernen?\n\nDer Ordner auf der Festplatte bleibt erhalten.",
+                "KlarWin — Ziel entfernen",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Question);
+            if (answer != MessageBoxResult.Yes) return;
+            _settings.TransferFolders.RemoveAll(f => f.Id == target.Id);
+            _settings.BrowserDownload.Rules.RemoveAll(r => r.FolderId == target.Id);
+            _settings.Save();
+            win.DialogResult = true;
+            RefreshTransferFolderList();
+            PanelBody.Text = $"Ziel „{target.Name}“ entfernt.";
+        };
+
+        var right = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            HorizontalAlignment = HorizontalAlignment.Right
+        };
+        var save = new Button
+        {
+            Content = "Speichern",
+            Width = 120,
+            Height = 34,
+            IsDefault = true,
+            Margin = new Thickness(0, 0, 8, 0)
+        };
+        save.Click += (_, _) =>
+        {
+            var name = nameBox.Text.Trim();
+            var path = pathBox.Text.Trim();
+            if (string.IsNullOrWhiteSpace(name))
+            {
+                MessageBox.Show(win, "Bitte einen Namen eingeben.", "KlarWin",
+                    MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
+            if (string.IsNullOrWhiteSpace(path) || !TransferFolderService.DirectoryExists(path))
+            {
+                MessageBox.Show(win, "Pfad nicht gefunden. Bitte einen vorhandenen Ordner wählen.", "KlarWin",
+                    MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            target.Name = name;
+            target.Path = Path.GetFullPath(path);
+            _settings.Save();
+            win.DialogResult = true;
+            RefreshTransferFolderList();
+            PanelBody.Text = $"Ziel „{target.Name}“ aktualisiert.\n{target.Path}";
+        };
+        var cancel = new Button { Content = "Abbrechen", Width = 100, Height = 34, IsCancel = true };
+        right.Children.Add(save);
+        right.Children.Add(cancel);
+        buttons.Children.Add(delete);
+        buttons.Children.Add(right);
+        stack.Children.Add(buttons);
+        win.Content = stack;
+        win.ShowDialog();
     }
 
     private void AddBrowserDownloadRule()
@@ -3076,7 +3197,7 @@ public partial class MainWindow : Window
             if (GetTransferView() == "browser")
                 RemoveSelectedBrowserRule();
             else
-                RemoveSelectedTransferFolder();
+                EditSelectedTransferFolder();
         }
     }
 
