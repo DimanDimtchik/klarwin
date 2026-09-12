@@ -1577,7 +1577,7 @@ public partial class MainWindow : Window
 
     private void RefreshTransferFolderList()
     {
-        SetDetailGridColumns("Name", "Pfad", "Status", 180, 360, 100);
+        SetDetailGridColumns("Name", "Pfad", "Status", 160, 400, 80);
         var folders = _settings.TransferFolders;
         if (folders.Count == 0)
         {
@@ -1593,13 +1593,31 @@ public partial class MainWindow : Window
         ShowDetailRows(folders.Select(f => new DetailRow
         {
             Col1 = f.Name,
-            Col2 = f.Path,
+            Col2 = FormatPathForList(f.Path),
             Col3 = TransferFolderService.StatusLabel(f),
             Tag = f
         }));
         PanelBody.Text =
             $"{folders.Count} Ziel(e). „Ordner öffnen“ / „Schnellzugriff“ für manuelle Uploads.\n\n" +
-            "Automatische Downloads: Registerkarte „Browser-Erweiterung“.";
+            "Automatische Downloads: Registerkarte „Browser-Erweiterung“.\n" +
+            "Hinweis: Lange Pfade in der Liste sind gekürzt (Ende sichtbar). Volle Pfade unter „Bearbeiten“.";
+    }
+
+    private static string FormatPathForList(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path)) return "";
+        try { path = Path.GetFullPath(path); }
+        catch { /* keep raw */ }
+
+        if (path.Length <= 58) return path;
+
+        var trimmed = path.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        var leaf = Path.GetFileName(trimmed);
+        var parentDir = Path.GetDirectoryName(trimmed) ?? "";
+        var parent = Path.GetFileName(parentDir);
+        var tail = string.IsNullOrEmpty(parent) ? leaf : parent + Path.DirectorySeparatorChar + leaf;
+        var root = Path.GetPathRoot(path) ?? "";
+        return root + "…" + Path.DirectorySeparatorChar + tail;
     }
 
     private void RefreshTransferBrowserList()
@@ -1689,18 +1707,52 @@ public partial class MainWindow : Window
         var win = new Window
         {
             Title = "Ziel bearbeiten",
-            Width = 520,
-            Height = 260,
+            Width = 640,
+            Height = 300,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
             Owner = this,
-            ResizeMode = ResizeMode.NoResize
+            ResizeMode = ResizeMode.CanResize,
+            MinWidth = 520,
+            MinHeight = 280
         };
         var stack = new StackPanel { Margin = new Thickness(16) };
         stack.Children.Add(new TextBlock { Text = "Name:", Margin = new Thickness(0, 0, 0, 4) });
         var nameBox = new TextBox { Text = target.Name, Height = 32, Margin = new Thickness(0, 0, 0, 10) };
         stack.Children.Add(nameBox);
         stack.Children.Add(new TextBlock { Text = "Pfad:", Margin = new Thickness(0, 0, 0, 4) });
-        var pathRow = new DockPanel { Margin = new Thickness(0, 0, 0, 12) };
+
+        var pathFull = new TextBlock
+        {
+            Text = target.Path,
+            TextWrapping = TextWrapping.Wrap,
+            FontSize = 13,
+            Margin = new Thickness(0, 0, 0, 8),
+            Foreground = new SolidColorBrush(Color.FromRgb(0x4A, 0x5C, 0x54))
+        };
+        stack.Children.Add(pathFull);
+
+        var pathRow = new Grid { Margin = new Thickness(0, 0, 0, 12) };
+        pathRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        pathRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        var pathBox = new TextBox
+        {
+            Text = target.Path,
+            Height = 32,
+            VerticalContentAlignment = VerticalAlignment.Center,
+            ToolTip = target.Path
+        };
+        void ShowPathStart()
+        {
+            pathBox.CaretIndex = 0;
+            pathBox.SelectionLength = 0;
+        }
+
+        pathBox.Loaded += (_, _) => ShowPathStart();
+        pathBox.TextChanged += (_, _) =>
+        {
+            pathFull.Text = pathBox.Text;
+            pathBox.ToolTip = pathBox.Text;
+        };
         var browse = new Button
         {
             Content = "Ordner …",
@@ -1708,20 +1760,26 @@ public partial class MainWindow : Window
             Height = 32,
             Margin = new Thickness(8, 0, 0, 0)
         };
-        DockPanel.SetDock(browse, Dock.Right);
-        var pathBox = new TextBox { Text = target.Path, Height = 32, VerticalContentAlignment = VerticalAlignment.Center };
         browse.Click += (_, _) =>
         {
+            var current = pathBox.Text.Trim();
             var dialog = new OpenFolderDialog
             {
                 Title = "Zielordner wählen",
-                InitialDirectory = TransferFolderService.DirectoryExists(pathBox.Text) ? pathBox.Text : ""
+                InitialDirectory = TransferFolderService.DirectoryExists(current) ? current : ""
             };
-            if (dialog.ShowDialog(this) == true && !string.IsNullOrWhiteSpace(dialog.FolderName))
-                pathBox.Text = dialog.FolderName;
+            if (dialog.ShowDialog(win) == true && !string.IsNullOrWhiteSpace(dialog.FolderName))
+            {
+                pathBox.Text = Path.GetFullPath(dialog.FolderName);
+                pathFull.Text = pathBox.Text;
+                pathBox.ToolTip = pathBox.Text;
+                ShowPathStart();
+            }
         };
-        pathRow.Children.Add(browse);
+        Grid.SetColumn(pathBox, 0);
+        Grid.SetColumn(browse, 1);
         pathRow.Children.Add(pathBox);
+        pathRow.Children.Add(browse);
         stack.Children.Add(pathRow);
 
         var buttons = new DockPanel();
