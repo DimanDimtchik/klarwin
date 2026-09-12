@@ -1942,16 +1942,32 @@ public partial class MainWindow : Window
     private void SetupBrowserExtension()
     {
         BrowserDownloadBridge.EnsureExtensionFilesCopied();
+        var extDir = BrowserDownloadBridge.ExtensionInstallDir;
+        try
+        {
+            File.WriteAllText(
+                Path.Combine(extDir, "LIESMICH.txt"),
+                "Das ist der KlarWin-Erweiterungsordner.\n" +
+                "In Chrome/Edge: Entpackt laden → diesen Ordner wählen (hier liegt manifest.json).\n" +
+                "Nicht einen Belege-/Personal-Ordner wählen.\n");
+        }
+        catch { /* optional */ }
+
+        try { Clipboard.SetText(extDir); }
+        catch { /* clipboard busy */ }
+
         BrowserDownloadBridge.OpenExtensionFolder();
 
         var win = new Window
         {
             Title = "Browser-Erweiterung einrichten",
-            Width = 520,
-            Height = 320,
+            Width = 560,
+            Height = 400,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
             Owner = this,
-            ResizeMode = ResizeMode.NoResize
+            ResizeMode = ResizeMode.CanResize,
+            MinWidth = 480,
+            MinHeight = 360
         };
         var stack = new StackPanel { Margin = new Thickness(16) };
         stack.Children.Add(new TextBlock
@@ -1959,11 +1975,48 @@ public partial class MainWindow : Window
             TextWrapping = TextWrapping.Wrap,
             Margin = new Thickness(0, 0, 0, 10),
             Text =
-                "1. Chrome: chrome://extensions  ·  Edge: edge://extensions\n" +
-                "2. „Entwicklermodus“ an → „Entpackt laden“\n" +
-                "3. Ordner wählen (wurde geöffnet):\n" + BrowserDownloadBridge.ExtensionInstallDir + "\n" +
-                "4. Extension-ID kopieren und hier einfügen, dann „Host registrieren“."
+                "Chrome öffnet bei „Entpackt laden“ oft den zuletzt genutzten Ordner " +
+                "(z. B. Belege) — das ist Windows/Chrome, nicht der KlarWin-Zielordner.\n\n" +
+                "So geht’s richtig:\n" +
+                "1. chrome://extensions  ·  Entwicklermodus an  ·  „Entpackt laden“\n" +
+                "2. Im Ordnerdialog oben in die Adresszeile klicken → Strg+V → Enter\n" +
+                "   (Pfad ist in der Zwischenablage)\n" +
+                "3. Ordner mit „manifest.json“ / „LIESMICH.txt“ bestätigen\n" +
+                "4. Extension-ID kopieren, hier einfügen → danach „Host registrieren“"
         });
+        stack.Children.Add(new TextBlock { Text = "Erweiterungsordner:", Margin = new Thickness(0, 0, 0, 4) });
+        var pathBox = new TextBox
+        {
+            Text = extDir,
+            IsReadOnly = true,
+            TextWrapping = TextWrapping.Wrap,
+            MinHeight = 48,
+            Margin = new Thickness(0, 0, 0, 8)
+        };
+        stack.Children.Add(pathBox);
+        var copyBtn = new Button
+        {
+            Content = "Pfad erneut kopieren",
+            Height = 32,
+            HorizontalAlignment = HorizontalAlignment.Left,
+            Margin = new Thickness(0, 0, 0, 12),
+            Padding = new Thickness(12, 4, 12, 4)
+        };
+        copyBtn.Click += (_, _) =>
+        {
+            try
+            {
+                Clipboard.SetText(extDir);
+                MessageBox.Show(win, "Pfad kopiert. In Chrome: Adresszeile → Strg+V → Enter.", "KlarWin",
+                    MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(win, UserFriendlyErrors.Translate(ex), "KlarWin",
+                    MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+        };
+        stack.Children.Add(copyBtn);
         stack.Children.Add(new TextBlock { Text = "Extension-ID:", Margin = new Thickness(0, 0, 0, 4) });
         var idBox = new TextBox
         {

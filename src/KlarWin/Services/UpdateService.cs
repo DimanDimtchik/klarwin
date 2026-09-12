@@ -154,6 +154,17 @@ public sealed class UpdateService
 
                     staged = Path.Combine(work, "KlarWin.exe.new");
                     File.Copy(newExe, staged, overwrite: true);
+
+                    // Keep browser extension next to install + in Roaming for Chrome „Entpackt laden“
+                    var extSrc = Directory.EnumerateDirectories(extractDir, "browser-extension", SearchOption.AllDirectories)
+                        .FirstOrDefault(d => File.Exists(Path.Combine(d, "manifest.json")));
+                    if (extSrc is not null)
+                    {
+                        var extBesideExe = Path.Combine(targetDir, "browser-extension");
+                        CopyDirectory(extSrc, extBesideExe);
+                        CopyDirectory(extSrc, BrowserDownloadBridge.ExtensionInstallDir);
+                    }
+
                     break;
                 }
                 catch (Exception ex)
@@ -232,6 +243,7 @@ public sealed class UpdateService
         sb.AppendLine("  exit /b 1");
         sb.AppendLine(")");
         sb.AppendLine("echo [%date% %time%] Kopie OK >> \"%LOG%\"");
+        // Extension folder is copied by C# before bat runs (Roaming + beside exe if present)
         AppendShortcutRefreshCommands(sb, targetExe, targetDir);
         sb.AppendLine("timeout /t 2 /nobreak >nul");
         sb.AppendLine("start \"\" \"%TARGET%\" --post-update");
@@ -243,6 +255,18 @@ public sealed class UpdateService
         sb.AppendLine($"rd /s /q \"{work}\" 2>nul");
         sb.AppendLine("endlocal");
         return sb.ToString();
+    }
+
+    private static void CopyDirectory(string sourceDir, string destDir)
+    {
+        Directory.CreateDirectory(destDir);
+        foreach (var file in Directory.EnumerateFiles(sourceDir, "*", SearchOption.AllDirectories))
+        {
+            var rel = Path.GetRelativePath(sourceDir, file);
+            var target = Path.Combine(destDir, rel);
+            Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+            File.Copy(file, target, overwrite: true);
+        }
     }
 
     private static void AppendLog(string path, string line)

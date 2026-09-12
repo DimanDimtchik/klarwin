@@ -44,20 +44,43 @@ public static class BrowserDownloadBridge
     {
         get
         {
-            var beside = Path.Combine(AppContext.BaseDirectory, "browser-extension");
-            if (Directory.Exists(beside) && File.Exists(Path.Combine(beside, "manifest.json")))
-                return beside;
+            foreach (var candidate in ExtensionSourceCandidates())
+            {
+                if (HasManifest(candidate))
+                    return candidate;
+            }
 
-            // Dev: repo browser-extension/klarwin-download
-            var dev = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "browser-extension", "klarwin-download"));
-            if (Directory.Exists(dev) && File.Exists(Path.Combine(dev, "manifest.json")))
-                return dev;
-
-            return Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-                "KlarWin", "browser-extension");
+            return ExtensionInstallDir;
         }
     }
+
+    private static IEnumerable<string> ExtensionSourceCandidates()
+    {
+        string? exeDir = null;
+        try
+        {
+            var exe = ExePath;
+            if (!string.IsNullOrWhiteSpace(exe))
+                exeDir = Path.GetDirectoryName(exe);
+        }
+        catch { /* ignore */ }
+
+        if (!string.IsNullOrWhiteSpace(exeDir))
+            yield return Path.Combine(exeDir, "browser-extension");
+
+        yield return Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "KlarWin", "browser-extension");
+
+        yield return Path.Combine(AppContext.BaseDirectory, "browser-extension");
+
+        yield return Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "browser-extension", "klarwin-download"));
+    }
+
+    private static bool HasManifest(string dir) =>
+        !string.IsNullOrWhiteSpace(dir)
+        && Directory.Exists(dir)
+        && File.Exists(Path.Combine(dir, "manifest.json"));
 
     public static string ExtensionInstallDir =>
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
@@ -80,11 +103,35 @@ public static class BrowserDownloadBridge
 
     public static void EnsureExtensionFilesCopied()
     {
-        var src = ExtensionSourceDir;
         var dst = ExtensionInstallDir;
         Directory.CreateDirectory(dst);
-        if (!Directory.Exists(src)) return;
 
+        foreach (var src in ExtensionSourceCandidates())
+        {
+            if (!HasManifest(src)) continue;
+            if (PathsEqual(src, dst)) break;
+            CopyTree(src, dst);
+            if (HasManifest(dst)) return;
+        }
+
+        if (HasManifest(dst)) return;
+        ExtractEmbeddedExtensionZip(dst);
+    }
+
+    private static bool PathsEqual(string a, string b)
+    {
+        try
+        {
+            return string.Equals(
+                Path.GetFullPath(a).TrimEnd('\\', '/'),
+                Path.GetFullPath(b).TrimEnd('\\', '/'),
+                StringComparison.OrdinalIgnoreCase);
+        }
+        catch { return false; }
+    }
+
+    private static void CopyTree(string src, string dst)
+    {
         foreach (var file in Directory.EnumerateFiles(src, "*", SearchOption.AllDirectories))
         {
             var rel = Path.GetRelativePath(src, file);
@@ -94,6 +141,34 @@ public static class BrowserDownloadBridge
         }
     }
 
+    private static void ExtractEmbeddedExtensionZip(string dst)
+    {
+        var asm = typeof(BrowserDownloadBridge).Assembly;
+        Stream? stream = asm.GetManifestResourceStream("KlarWin.Assets.browser-extension.zip");
+        if (stream is null)
+        {
+            var name = asm.GetManifestResourceNames()
+                .FirstOrDefault(n => n.EndsWith("browser-extension.zip", StringComparison.OrdinalIgnoreCase));
+            if (name is null) return;
+            stream = asm.GetManifestResourceStream(name);
+        }
+
+        if (stream is null) return;
+        using (stream)
+        {
+            var tmp = Path.Combine(Path.GetTempPath(), "klarwin-ext-" + Guid.NewGuid().ToString("N") + ".zip");
+            try
+            {
+                using (var fs = File.Create(tmp))
+                    stream.CopyTo(fs);
+                System.IO.Compression.ZipFile.ExtractToDirectory(tmp, dst, overwriteFiles: true);
+            }
+            finally
+            {
+                try { File.Delete(tmp); } catch { /* ignore */ }
+            }
+        }
+    }
     public static (bool Ok, string Message) RegisterNativeHost(string? extensionId)
     {
         if (string.IsNullOrWhiteSpace(extensionId))
