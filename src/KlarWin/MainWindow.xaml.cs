@@ -1533,11 +1533,11 @@ public partial class MainWindow : Window
     {
         PrimaryAction.Content = "Regel hinzufügen";
         PrimaryAction.Visibility = Visibility.Visible;
-        SecondaryAction.Content = "Erweiterung einrichten";
+        SecondaryAction.Content = "Browser einrichten";
         SecondaryAction.Visibility = Visibility.Visible;
         TertiaryAction.Content = "Regel entfernen";
         TertiaryAction.Visibility = Visibility.Visible;
-        QuaternaryAction.Content = "Host registrieren";
+        QuaternaryAction.Content = "Manuell (Entpackt)";
         QuaternaryAction.Visibility = Visibility.Visible;
 
         OptionsPanel.Visibility = Visibility.Visible;
@@ -1553,11 +1553,14 @@ public partial class MainWindow : Window
         {
             _settings.BrowserDownload.Enabled = true;
             _settings.Save();
+            PromptAndInstallBrowserExtension();
             RefreshTransferBrowserList();
         };
         enable.Unchecked += (_, _) =>
         {
             _settings.BrowserDownload.Enabled = false;
+            BrowserExtensionInstallService.DisableForAllKnownBrowsers();
+            _settings.BrowserDownload.EnabledBrowserIds.Clear();
             _settings.Save();
             RefreshTransferBrowserList();
         };
@@ -1643,15 +1646,15 @@ public partial class MainWindow : Window
         }
 
         var state = _settings.BrowserDownload.Enabled ? "aktiv" : "aus";
-        var ext = string.IsNullOrWhiteSpace(_settings.BrowserDownload.ExtensionId)
-            ? "keine Extension-ID"
-            : $"ID {_settings.BrowserDownload.ExtensionId}";
+        var browsers = _settings.BrowserDownload.EnabledBrowserIds.Count == 0
+            ? "keine Browser"
+            : string.Join(", ", _settings.BrowserDownload.EnabledBrowserIds);
         PanelBody.Text =
-            $"Browser-Download: {state} · {rules.Count} Regel(n) · {ext}\n\n" +
+            $"Browser-Download: {state} · {rules.Count} Regel(n) · {browsers}\n\n" +
             "1) Zielordner anlegen (andere Registerkarte)\n" +
-            "2) Regel: Website → Zielordner (+ optional Profil-Kennzeichen)\n" +
-            "3) „Erweiterung einrichten“ → in Chrome/Edge „Entpackt laden“\n" +
-            "4) Extension-ID hier eintragen → „Host registrieren“\n\n" +
+            "2) Regel: Website → Zielordner\n" +
+            "3) „Browser einrichten“: installierte Browser wählen — Erweiterung wird per Richtlinie vorinstalliert\n" +
+            "4) Browser neu starten\n\n" +
             "Nach dem Download verschiebt KlarWin die Datei in den Zielordner.";
     }
 
@@ -1939,7 +1942,107 @@ public partial class MainWindow : Window
         RefreshTransferBrowserList();
     }
 
-    private void SetupBrowserExtension()
+    private void PromptAndInstallBrowserExtension()
+    {
+        var detected = BrowserDetectionService.DetectChromiumBrowsers();
+        if (detected.Count == 0)
+        {
+            MessageBox.Show(this,
+                "Kein Chromium-Browser gefunden (Chrome, Edge, Brave).\n\n" +
+                "Sie können die Erweiterung weiterhin manuell über „Manuell (Entpackt)“ laden.",
+                "KlarWin — Browser",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+            return;
+        }
+
+        var win = new Window
+        {
+            Title = "Browser für KlarWin-Erweiterung",
+            Width = 480,
+            Height = 360,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Owner = this,
+            ResizeMode = ResizeMode.NoResize
+        };
+        var stack = new StackPanel { Margin = new Thickness(16) };
+        stack.Children.Add(new TextBlock
+        {
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 0, 0, 12),
+            Text = "Welche Browser sollen die KlarWin-Download-Erweiterung automatisch erhalten?\n" +
+                   "(Nach der Aktivierung Browser einmal neu starten.)"
+        });
+
+        var checks = new Dictionary<string, CheckBox>(StringComparer.OrdinalIgnoreCase);
+        var previously = _settings.BrowserDownload.EnabledBrowserIds.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        foreach (var browser in detected)
+        {
+            var cb = new CheckBox
+            {
+                Content = browser.DisplayName,
+                IsChecked = previously.Count == 0 || previously.Contains(browser.Id),
+                FontSize = 14,
+                Margin = new Thickness(0, 0, 0, 8),
+                Tag = browser
+            };
+            checks[browser.Id] = cb;
+            stack.Children.Add(cb);
+        }
+
+        var row = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            Margin = new Thickness(0, 12, 0, 0)
+        };
+        var ok = new Button { Content = "Aktivieren", Width = 120, Height = 34, IsDefault = true, Margin = new Thickness(0, 0, 8, 0) };
+        ok.Click += (_, _) =>
+        {
+            var selected = checks.Values
+                .Where(c => c.IsChecked == true && c.Tag is InstalledBrowser)
+                .Select(c => (InstalledBrowser)c.Tag!)
+                .ToList();
+            if (selected.Count == 0)
+            {
+                MessageBox.Show(win, "Bitte mindestens einen Browser wählen.", "KlarWin",
+                    MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
+            var (okResult, message) = BrowserExtensionInstallService.EnableForBrowsers(selected);
+            _settings.BrowserDownload.Enabled = okResult;
+            _settings.BrowserDownload.ExtensionId = BrowserExtensionInstallService.StableExtensionId;
+            _settings.BrowserDownload.EnabledBrowserIds = selected.Select(b => b.Id).ToList();
+            _settings.Save();
+            PanelBody.Text = message;
+            MessageBox.Show(win, message, "KlarWin — Erweiterung", MessageBoxButton.OK,
+                okResult ? MessageBoxImage.Information : MessageBoxImage.Warning);
+
+            if (okResult)
+            {
+                var restart = MessageBox.Show(win,
+                    "Ausgewählte Browser jetzt schließen, damit die Erweiterung geladen wird?\n\n" +
+                    "Bitte vorher Arbeit speichern.",
+                    "KlarWin",
+                    MessageBoxButton.YesNo,
+                    MessageBoxImage.Question);
+                if (restart == MessageBoxResult.Yes)
+                    BrowserExtensionInstallService.TryCloseBrowsers(selected);
+            }
+
+            win.DialogResult = true;
+        };
+        var cancel = new Button { Content = "Abbrechen", Width = 100, Height = 34, IsCancel = true };
+        row.Children.Add(ok);
+        row.Children.Add(cancel);
+        stack.Children.Add(row);
+        win.Content = stack;
+        win.ShowDialog();
+        RefreshTransferBrowserList();
+    }
+
+    private void SetupBrowserExtensionManual()
     {
         BrowserDownloadBridge.EnsureExtensionFilesCopied();
         var extDir = BrowserDownloadBridge.ExtensionInstallDir;
@@ -1948,119 +2051,27 @@ public partial class MainWindow : Window
             File.WriteAllText(
                 Path.Combine(extDir, "LIESMICH.txt"),
                 "Das ist der KlarWin-Erweiterungsordner.\n" +
-                "In Chrome/Edge: Entpackt laden → diesen Ordner wählen (hier liegt manifest.json).\n" +
-                "Nicht einen Belege-/Personal-Ordner wählen.\n");
+                "In Chrome/Edge: Entpackt laden → diesen Ordner wählen (hier liegt manifest.json).\n");
         }
         catch { /* optional */ }
 
-        try { Clipboard.SetText(extDir); }
-        catch { /* clipboard busy */ }
-
+        try { Clipboard.SetText(extDir); } catch { /* clipboard busy */ }
         BrowserDownloadBridge.OpenExtensionFolder();
-
-        var win = new Window
-        {
-            Title = "Browser-Erweiterung einrichten",
-            Width = 560,
-            Height = 400,
-            WindowStartupLocation = WindowStartupLocation.CenterOwner,
-            Owner = this,
-            ResizeMode = ResizeMode.CanResize,
-            MinWidth = 480,
-            MinHeight = 360
-        };
-        var stack = new StackPanel { Margin = new Thickness(16) };
-        stack.Children.Add(new TextBlock
-        {
-            TextWrapping = TextWrapping.Wrap,
-            Margin = new Thickness(0, 0, 0, 10),
-            Text =
-                "Chrome öffnet bei „Entpackt laden“ oft den zuletzt genutzten Ordner " +
-                "(z. B. Belege) — das ist Windows/Chrome, nicht der KlarWin-Zielordner.\n\n" +
-                "So geht’s richtig:\n" +
-                "1. chrome://extensions  ·  Entwicklermodus an  ·  „Entpackt laden“\n" +
-                "2. Im Ordnerdialog oben in die Adresszeile klicken → Strg+V → Enter\n" +
-                "   (Pfad ist in der Zwischenablage)\n" +
-                "3. Ordner mit „manifest.json“ / „LIESMICH.txt“ bestätigen\n" +
-                "4. Extension-ID kopieren, hier einfügen → danach „Host registrieren“"
-        });
-        stack.Children.Add(new TextBlock { Text = "Erweiterungsordner:", Margin = new Thickness(0, 0, 0, 4) });
-        var pathBox = new TextBox
-        {
-            Text = extDir,
-            IsReadOnly = true,
-            TextWrapping = TextWrapping.Wrap,
-            MinHeight = 48,
-            Margin = new Thickness(0, 0, 0, 8)
-        };
-        stack.Children.Add(pathBox);
-        var copyBtn = new Button
-        {
-            Content = "Pfad erneut kopieren",
-            Height = 32,
-            HorizontalAlignment = HorizontalAlignment.Left,
-            Margin = new Thickness(0, 0, 0, 12),
-            Padding = new Thickness(12, 4, 12, 4)
-        };
-        copyBtn.Click += (_, _) =>
-        {
-            try
-            {
-                Clipboard.SetText(extDir);
-                MessageBox.Show(win, "Pfad kopiert. In Chrome: Adresszeile → Strg+V → Enter.", "KlarWin",
-                    MessageBoxButton.OK, MessageBoxImage.Information);
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show(win, UserFriendlyErrors.Translate(ex), "KlarWin",
-                    MessageBoxButton.OK, MessageBoxImage.Warning);
-            }
-        };
-        stack.Children.Add(copyBtn);
-        stack.Children.Add(new TextBlock { Text = "Extension-ID:", Margin = new Thickness(0, 0, 0, 4) });
-        var idBox = new TextBox
-        {
-            Height = 32,
-            Text = _settings.BrowserDownload.ExtensionId,
-            Margin = new Thickness(0, 0, 0, 12)
-        };
-        stack.Children.Add(idBox);
-        var row = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
-        var save = new Button { Content = "ID speichern", Width = 130, Height = 34, Margin = new Thickness(0, 0, 8, 0) };
-        save.Click += (_, _) =>
-        {
-            _settings.BrowserDownload.ExtensionId = idBox.Text.Trim();
-            _settings.BrowserDownload.Enabled = true;
-            _settings.Save();
-            win.DialogResult = true;
-        };
-        var cancel = new Button { Content = "Schließen", Width = 100, Height = 34, IsCancel = true };
-        row.Children.Add(save);
-        row.Children.Add(cancel);
-        stack.Children.Add(row);
-        win.Content = stack;
-        win.ShowDialog();
-        RefreshTransferBrowserList();
-    }
-
-    private void RegisterBrowserNativeHost()
-    {
-        if (string.IsNullOrWhiteSpace(_settings.BrowserDownload.ExtensionId))
-        {
-            SetupBrowserExtension();
-            if (string.IsNullOrWhiteSpace(_settings.BrowserDownload.ExtensionId))
-                return;
-        }
-
-        var (ok, message) = BrowserDownloadBridge.RegisterNativeHost(_settings.BrowserDownload.ExtensionId);
-        _settings.BrowserDownload.Enabled = ok || _settings.BrowserDownload.Enabled;
+        BrowserDownloadBridge.RegisterNativeHost(BrowserExtensionInstallService.StableExtensionId);
+        _settings.BrowserDownload.ExtensionId = BrowserExtensionInstallService.StableExtensionId;
         _settings.Save();
-        PanelBody.Text = message;
-        MessageBox.Show(this, message, "KlarWin — Native Host", MessageBoxButton.OK,
-            ok ? MessageBoxImage.Information : MessageBoxImage.Warning);
+
+        MessageBox.Show(this,
+            "Manueller Fallback:\n\n" +
+            "1. chrome://extensions · Entwicklermodus · Entpackt laden\n" +
+            "2. Adresszeile: Strg+V (Pfad kopiert)\n" +
+            "3. Ordner „browser-extension“ bestätigen (Dateien sind unsichtbar — nur Unterordner „icons“ erscheint)\n\n" +
+            extDir,
+            "KlarWin — Manuell laden",
+            MessageBoxButton.OK,
+            MessageBoxImage.Information);
         RefreshTransferBrowserList();
     }
-
     private string? PromptTransferFolderName(string initial)
     {
         var win = new Window
@@ -3244,7 +3255,7 @@ public partial class MainWindow : Window
         if (_mode == "transfer")
         {
             if (GetTransferView() == "browser")
-                RegisterBrowserNativeHost();
+                SetupBrowserExtensionManual();
             else
                 PinSelectedTransferFolder();
             return;
@@ -3610,7 +3621,7 @@ public partial class MainWindow : Window
                 break;
             case "transfer":
                 if (GetTransferView() == "browser")
-                    SetupBrowserExtension();
+                    PromptAndInstallBrowserExtension();
                 else
                     AddTransferFolderTarget();
                 break;

@@ -9,8 +9,9 @@ namespace KlarWin.Services;
 public sealed class BrowserDownloadSettings
 {
     public bool Enabled { get; set; }
-    /// <summary>Chrome/Edge extension ID after „Entpackt laden“ (for Native Messaging allow-list).</summary>
-    public string ExtensionId { get; set; } = "";
+    /// <summary>Stable Chrome/Edge extension ID (force-install). Kept for compatibility.</summary>
+    public string ExtensionId { get; set; } = BrowserExtensionInstallService.StableExtensionId;
+    public List<string> EnabledBrowserIds { get; set; } = [];
     public List<BrowserDownloadRule> Rules { get; set; } = [];
 }
 
