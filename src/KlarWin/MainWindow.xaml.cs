@@ -2019,7 +2019,7 @@ public partial class MainWindow : Window
             MessageBox.Show(win, message, "KlarWin — Erweiterung", MessageBoxButton.OK,
                 okResult ? MessageBoxImage.Information : MessageBoxImage.Warning);
 
-            if (okResult)
+            if (okResult && message.Contains("neu starten", StringComparison.OrdinalIgnoreCase))
             {
                 var restart = MessageBox.Show(win,
                     "Ausgewählte Browser jetzt schließen, damit die Erweiterung geladen wird?\n\n" +
