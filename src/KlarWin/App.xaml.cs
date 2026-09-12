@@ -13,6 +13,14 @@ public partial class App : Application
 
     protected override void OnStartup(StartupEventArgs e)
     {
+        if (e.Args.Any(a => a.Equals(BrowserDownloadBridge.NativeArg, StringComparison.OrdinalIgnoreCase)))
+        {
+            // Chrome/Edge Native Messaging — no UI, no single-instance lock
+            var code = BrowserDownloadBridge.RunNativeMessagingHost();
+            Shutdown(code);
+            return;
+        }
+
         var postUpdate = e.Args.Any(a => a.Equals("--post-update", StringComparison.OrdinalIgnoreCase));
 
         AppDomain.CurrentDomain.UnhandledException += (_, args) =>

@@ -1494,15 +1494,86 @@ public partial class MainWindow : Window
         _mode = "transfer";
         ResetPanelChrome();
         PanelTitle.Text = "Up-/Download-Ziele";
+        _filterUpdating = true;
+        try
+        {
+            FilterBox.Items.Clear();
+            FilterBox.Items.Add(new ComboBoxItem { Content = "Zielordner", Tag = "folders" });
+            FilterBox.Items.Add(new ComboBoxItem { Content = "Browser-Erweiterung", Tag = "browser" });
+            FilterBox.SelectedIndex = 0;
+            FilterBox.Visibility = Visibility.Visible;
+        }
+        finally
+        {
+            _filterUpdating = false;
+        }
+
+        ShowTransferFoldersView();
+    });
+
+    private string GetTransferView() =>
+        FilterBox.SelectedItem is ComboBoxItem { Tag: string tag } ? tag : "folders";
+
+    private void ShowTransferFoldersView()
+    {
         PrimaryAction.Content = "Ordner öffnen";
+        PrimaryAction.Visibility = Visibility.Visible;
         SecondaryAction.Content = "Ziel hinzufügen";
         SecondaryAction.Visibility = Visibility.Visible;
         TertiaryAction.Content = "Ziel entfernen";
         TertiaryAction.Visibility = Visibility.Visible;
         QuaternaryAction.Content = "Schnellzugriff";
         QuaternaryAction.Visibility = Visibility.Visible;
+        OptionsPanel.Visibility = Visibility.Collapsed;
+        OptionsPanel.Children.Clear();
         RefreshTransferFolderList();
-    });
+    }
+
+    private void ShowTransferBrowserView()
+    {
+        PrimaryAction.Content = "Regel hinzufügen";
+        PrimaryAction.Visibility = Visibility.Visible;
+        SecondaryAction.Content = "Erweiterung einrichten";
+        SecondaryAction.Visibility = Visibility.Visible;
+        TertiaryAction.Content = "Regel entfernen";
+        TertiaryAction.Visibility = Visibility.Visible;
+        QuaternaryAction.Content = "Host registrieren";
+        QuaternaryAction.Visibility = Visibility.Visible;
+
+        OptionsPanel.Visibility = Visibility.Visible;
+        OptionsPanel.Children.Clear();
+        var enable = new CheckBox
+        {
+            Content = "Browser-Download-Ziele aktiv",
+            IsChecked = _settings.BrowserDownload.Enabled,
+            FontSize = 14,
+            Margin = new Thickness(0, 0, 0, 8)
+        };
+        enable.Checked += (_, _) =>
+        {
+            _settings.BrowserDownload.Enabled = true;
+            _settings.Save();
+            RefreshTransferBrowserList();
+        };
+        enable.Unchecked += (_, _) =>
+        {
+            _settings.BrowserDownload.Enabled = false;
+            _settings.Save();
+            RefreshTransferBrowserList();
+        };
+        OptionsPanel.Children.Add(enable);
+        OptionsPanel.Children.Add(new TextBlock
+        {
+            Text = "Chrome/Edge-Profile sind getrennt (eigene Erweiterungseinstellungen). " +
+                   "Google-/Microsoft-Konten im selben Profil können Downloads nicht unterscheiden — dafür das Profil-Kennzeichen in der Erweiterung nutzen.",
+            FontSize = 13,
+            TextWrapping = TextWrapping.Wrap,
+            Foreground = new SolidColorBrush(Color.FromRgb(0x4A, 0x5C, 0x54)),
+            Margin = new Thickness(0, 0, 0, 8)
+        });
+
+        RefreshTransferBrowserList();
+    }
 
     private void RefreshTransferFolderList()
     {
@@ -1513,8 +1584,9 @@ public partial class MainWindow : Window
             DetailGrid.Visibility = Visibility.Collapsed;
             DetailGrid.ItemsSource = null;
             PanelBody.Text =
-                "Noch keine Ziele. „Ziel hinzufügen“ legt einen Ordner an (Name frei wählbar — z. B. für Buchhaltung, Personal, Projekte).\n\n" +
-                "Vor dem Hoch- oder Herunterladen in einer Cloud-App den passenden Eintrag öffnen — der Explorer startet dann in diesem Ordner.";
+                "Noch keine Ziele. „Ziel hinzufügen“ legt einen Ordner an (Name frei wählbar).\n\n" +
+                "Vor dem Hochladen in einer Cloud-App den passenden Eintrag öffnen. " +
+                "Für automatische Downloads: Registerkarte „Browser-Erweiterung“.";
             return;
         }
 
@@ -1526,13 +1598,55 @@ public partial class MainWindow : Window
             Tag = f
         }));
         PanelBody.Text =
-            $"{folders.Count} Ziel(e). Eintrag wählen → „Ordner öffnen“, dann in der Web-App hoch- oder herunterladen.\n\n" +
-            "„Schnellzugriff“ heftet den KlarWin-Namen an (nicht den Windows-Ordnernamen). Unterordner werden nicht mitangeheftet.";
+            $"{folders.Count} Ziel(e). „Ordner öffnen“ / „Schnellzugriff“ für manuelle Uploads.\n\n" +
+            "Automatische Downloads: Registerkarte „Browser-Erweiterung“.";
+    }
+
+    private void RefreshTransferBrowserList()
+    {
+        SetDetailGridColumns("Website", "Zielordner", "Profil", 220, 220, 120);
+        var rules = _settings.BrowserDownload.Rules;
+        var folders = _settings.TransferFolders.ToDictionary(f => f.Id, f => f.Name, StringComparer.OrdinalIgnoreCase);
+
+        if (rules.Count == 0)
+        {
+            DetailGrid.Visibility = Visibility.Collapsed;
+            DetailGrid.ItemsSource = null;
+        }
+        else
+        {
+            ShowDetailRows(rules.Select(r => new DetailRow
+            {
+                Col1 = r.HostPattern,
+                Col2 = folders.TryGetValue(r.FolderId, out var n) ? n : "(fehlendes Ziel)",
+                Col3 = string.IsNullOrWhiteSpace(r.ProfileKey) ? "alle" : r.ProfileKey,
+                Tag = r
+            }));
+        }
+
+        var state = _settings.BrowserDownload.Enabled ? "aktiv" : "aus";
+        var ext = string.IsNullOrWhiteSpace(_settings.BrowserDownload.ExtensionId)
+            ? "keine Extension-ID"
+            : $"ID {_settings.BrowserDownload.ExtensionId}";
+        PanelBody.Text =
+            $"Browser-Download: {state} · {rules.Count} Regel(n) · {ext}\n\n" +
+            "1) Zielordner anlegen (andere Registerkarte)\n" +
+            "2) Regel: Website → Zielordner (+ optional Profil-Kennzeichen)\n" +
+            "3) „Erweiterung einrichten“ → in Chrome/Edge „Entpackt laden“\n" +
+            "4) Extension-ID hier eintragen → „Host registrieren“\n\n" +
+            "Nach dem Download verschiebt KlarWin die Datei in den Zielordner.";
     }
 
     private TransferFolderTarget? GetSelectedTransferFolder()
     {
         if (DetailGrid.SelectedItem is DetailRow { Tag: TransferFolderTarget tagged })
+            return tagged;
+        return null;
+    }
+
+    private BrowserDownloadRule? GetSelectedBrowserRule()
+    {
+        if (DetailGrid.SelectedItem is DetailRow { Tag: BrowserDownloadRule tagged })
             return tagged;
         return null;
     }
@@ -1560,6 +1674,159 @@ public partial class MainWindow : Window
         RefreshTransferFolderList();
         PanelBody.Text = $"Ziel „{name.Trim()}“ hinzugefügt.\n\n" +
                          "Vor dem nächsten Upload/Download diesen Eintrag öffnen.";
+    }
+
+    private void AddBrowserDownloadRule()
+    {
+        if (_settings.TransferFolders.Count == 0)
+        {
+            MessageBox.Show(this, "Bitte zuerst mindestens einen Zielordner anlegen.", "KlarWin",
+                MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var win = new Window
+        {
+            Title = "Download-Regel",
+            Width = 460,
+            Height = 280,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Owner = this,
+            ResizeMode = ResizeMode.NoResize
+        };
+        var stack = new StackPanel { Margin = new Thickness(16) };
+        stack.Children.Add(new TextBlock { Text = "Website (z. B. lexoffice.de oder shiftbase.com):", Margin = new Thickness(0, 0, 0, 4) });
+        var hostBox = new TextBox { Height = 32, Margin = new Thickness(0, 0, 0, 10) };
+        stack.Children.Add(hostBox);
+        stack.Children.Add(new TextBlock { Text = "Zielordner:", Margin = new Thickness(0, 0, 0, 4) });
+        var folderBox = new ComboBox { Height = 32, Margin = new Thickness(0, 0, 0, 10) };
+        foreach (var f in _settings.TransferFolders)
+            folderBox.Items.Add(new ComboBoxItem { Content = f.Name, Tag = f.Id });
+        folderBox.SelectedIndex = 0;
+        stack.Children.Add(folderBox);
+        stack.Children.Add(new TextBlock
+        {
+            Text = "Profil-Kennzeichen (optional, muss zur Erweiterung passen):",
+            Margin = new Thickness(0, 0, 0, 4)
+        });
+        var profileBox = new TextBox { Height = 32, Margin = new Thickness(0, 0, 0, 10) };
+        stack.Children.Add(profileBox);
+        var ok = new Button
+        {
+            Content = "Speichern",
+            Width = 120,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            IsDefault = true
+        };
+        ok.Click += (_, _) =>
+        {
+            var host = hostBox.Text.Trim();
+            if (string.IsNullOrWhiteSpace(host)) return;
+            if (folderBox.SelectedItem is not ComboBoxItem { Tag: string folderId }) return;
+            host = host.Replace("https://", "", StringComparison.OrdinalIgnoreCase)
+                .Replace("http://", "", StringComparison.OrdinalIgnoreCase)
+                .Trim().Trim('/');
+            if (host.Contains('/'))
+                host = host.Split('/')[0];
+
+            _settings.BrowserDownload.Rules.Add(new BrowserDownloadRule
+            {
+                HostPattern = host,
+                FolderId = folderId,
+                ProfileKey = profileBox.Text.Trim()
+            });
+            _settings.BrowserDownload.Enabled = true;
+            _settings.Save();
+            win.DialogResult = true;
+        };
+        stack.Children.Add(ok);
+        win.Content = stack;
+        if (win.ShowDialog() == true)
+            RefreshTransferBrowserList();
+    }
+
+    private void RemoveSelectedBrowserRule()
+    {
+        var rule = GetSelectedBrowserRule();
+        if (rule is null)
+        {
+            MessageBox.Show(this, "Bitte eine Regel in der Liste wählen.", "KlarWin",
+                MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        _settings.BrowserDownload.Rules.RemoveAll(r => r.Id == rule.Id);
+        _settings.Save();
+        RefreshTransferBrowserList();
+    }
+
+    private void SetupBrowserExtension()
+    {
+        BrowserDownloadBridge.EnsureExtensionFilesCopied();
+        BrowserDownloadBridge.OpenExtensionFolder();
+
+        var win = new Window
+        {
+            Title = "Browser-Erweiterung einrichten",
+            Width = 520,
+            Height = 320,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Owner = this,
+            ResizeMode = ResizeMode.NoResize
+        };
+        var stack = new StackPanel { Margin = new Thickness(16) };
+        stack.Children.Add(new TextBlock
+        {
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 0, 0, 10),
+            Text =
+                "1. Chrome: chrome://extensions  ·  Edge: edge://extensions\n" +
+                "2. „Entwicklermodus“ an → „Entpackt laden“\n" +
+                "3. Ordner wählen (wurde geöffnet):\n" + BrowserDownloadBridge.ExtensionInstallDir + "\n" +
+                "4. Extension-ID kopieren und hier einfügen, dann „Host registrieren“."
+        });
+        stack.Children.Add(new TextBlock { Text = "Extension-ID:", Margin = new Thickness(0, 0, 0, 4) });
+        var idBox = new TextBox
+        {
+            Height = 32,
+            Text = _settings.BrowserDownload.ExtensionId,
+            Margin = new Thickness(0, 0, 0, 12)
+        };
+        stack.Children.Add(idBox);
+        var row = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
+        var save = new Button { Content = "ID speichern", Width = 130, Height = 34, Margin = new Thickness(0, 0, 8, 0) };
+        save.Click += (_, _) =>
+        {
+            _settings.BrowserDownload.ExtensionId = idBox.Text.Trim();
+            _settings.BrowserDownload.Enabled = true;
+            _settings.Save();
+            win.DialogResult = true;
+        };
+        var cancel = new Button { Content = "Schließen", Width = 100, Height = 34, IsCancel = true };
+        row.Children.Add(save);
+        row.Children.Add(cancel);
+        stack.Children.Add(row);
+        win.Content = stack;
+        win.ShowDialog();
+        RefreshTransferBrowserList();
+    }
+
+    private void RegisterBrowserNativeHost()
+    {
+        if (string.IsNullOrWhiteSpace(_settings.BrowserDownload.ExtensionId))
+        {
+            SetupBrowserExtension();
+            if (string.IsNullOrWhiteSpace(_settings.BrowserDownload.ExtensionId))
+                return;
+        }
+
+        var (ok, message) = BrowserDownloadBridge.RegisterNativeHost(_settings.BrowserDownload.ExtensionId);
+        _settings.BrowserDownload.Enabled = ok || _settings.BrowserDownload.Enabled;
+        _settings.Save();
+        PanelBody.Text = message;
+        MessageBox.Show(this, message, "KlarWin — Native Host", MessageBoxButton.OK,
+            ok ? MessageBoxImage.Information : MessageBoxImage.Warning);
+        RefreshTransferBrowserList();
     }
 
     private string? PromptTransferFolderName(string initial)
@@ -1634,6 +1901,7 @@ public partial class MainWindow : Window
         if (answer != MessageBoxResult.Yes) return;
 
         _settings.TransferFolders.RemoveAll(f => f.Id == target.Id);
+        _settings.BrowserDownload.Rules.RemoveAll(r => r.FolderId == target.Id);
         _settings.Save();
         RefreshTransferFolderList();
     }
@@ -1649,12 +1917,9 @@ public partial class MainWindow : Window
         }
 
         var (ok, message) = TransferFolderService.PinToQuickAccess(target.Path, target.Name);
-        PanelBody.Text = ok
-            ? message
-            : message;
+        PanelBody.Text = message;
         if (!ok) RefreshTransferFolderList();
     }
-
     private void OnOverlayClick(object sender, RoutedEventArgs e) => SafeTile(() =>
     {
         _mode = "overlay";
@@ -2722,6 +2987,15 @@ public partial class MainWindow : Window
             return;
         }
 
+        if (_mode == "transfer")
+        {
+            if (GetTransferView() == "browser")
+                ShowTransferBrowserView();
+            else
+                ShowTransferFoldersView();
+            return;
+        }
+
         if (_mode != "ai") return;
         _aiFilter = FilterBox.SelectedItem is ComboBoxItem aiItem && aiItem.Tag is string tag ? tag : "all";
         _ = ShowAiPanelAsync(refreshApps: false);
@@ -2737,7 +3011,10 @@ public partial class MainWindow : Window
 
         if (_mode == "transfer")
         {
-            PinSelectedTransferFolder();
+            if (GetTransferView() == "browser")
+                RegisterBrowserNativeHost();
+            else
+                PinSelectedTransferFolder();
             return;
         }
 
@@ -2796,7 +3073,10 @@ public partial class MainWindow : Window
         }
         else if (_mode == "transfer")
         {
-            RemoveSelectedTransferFolder();
+            if (GetTransferView() == "browser")
+                RemoveSelectedBrowserRule();
+            else
+                RemoveSelectedTransferFolder();
         }
     }
 
@@ -2934,7 +3214,10 @@ public partial class MainWindow : Window
                 ApplyUsbFormat();
                 break;
             case "transfer":
-                OpenSelectedTransferFolder();
+                if (GetTransferView() == "browser")
+                    AddBrowserDownloadRule();
+                else
+                    OpenSelectedTransferFolder();
                 break;
         }
     }
@@ -3094,7 +3377,10 @@ public partial class MainWindow : Window
                 RefreshUsbDriveList();
                 break;
             case "transfer":
-                AddTransferFolderTarget();
+                if (GetTransferView() == "browser")
+                    SetupBrowserExtension();
+                else
+                    AddTransferFolderTarget();
                 break;
         }
     }

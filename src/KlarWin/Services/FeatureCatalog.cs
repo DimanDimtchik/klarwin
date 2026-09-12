@@ -104,6 +104,6 @@ public static class FeatureCatalog
     [
         new("Eigene Zielordner anlegen", false),
         new("Vor Upload/Download öffnen", false),
-        new("Optional: Schnellzugriff anheften", false)
+        new("Optional: Schnellzugriff / Browser", false)
     ];
 }

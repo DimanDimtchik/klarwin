@@ -1,0 +1,20 @@
+{
+  "manifest_version": 3,
+  "name": "KlarWin Download-Ziele",
+  "version": "1.0.0",
+  "description": "Verschiebt Downloads von bestimmten Websites in die in KlarWin hinterlegten Zielordner. Pro Browser-Profil konfigurierbar.",
+  "permissions": ["downloads", "storage", "nativeMessaging", "notifications"],
+  "host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "KlarWin Download-Ziele",
+    "default_popup": "popup.html"
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}

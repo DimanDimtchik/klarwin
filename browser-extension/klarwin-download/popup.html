@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="utf-8" />
+  <style>
+    body { font-family: "Segoe UI", sans-serif; margin: 12px; width: 320px; color: #18241F; background: #F4F8F5; }
+    h1 { font-size: 15px; margin: 0 0 8px; color: #2F6A4A; }
+    p { font-size: 12px; line-height: 1.35; color: #4A5C54; margin: 0 0 10px; }
+    label { font-size: 12px; display: block; margin-bottom: 4px; }
+    input { width: 100%; box-sizing: border-box; padding: 6px 8px; margin-bottom: 8px; border: 1px solid #C3D1C8; border-radius: 0; }
+    button { background: #2F6A4A; color: #fff; border: 0; padding: 8px 12px; cursor: pointer; font-size: 12px; }
+    button.secondary { background: transparent; color: #2F6A4A; border: 1px solid #2F6A4A; margin-left: 6px; }
+    #status { font-size: 11px; margin-top: 10px; white-space: pre-wrap; }
+    ul { padding-left: 16px; margin: 6px 0 0; font-size: 11px; color: #4A5C54; }
+  </style>
+</head>
+<body>
+  <h1>KlarWin Download-Ziele</h1>
+  <p>Regeln kommen aus KlarWin. Dieses Browser-<strong>Profil</strong> kann ein eigenes Kennzeichen haben (z.&nbsp;B. Arbeit / Privat) — das ist nicht dasselbe wie ein Google-Konto in demselben Profil.</p>
+  <label for="profileKey">Profil-Kennzeichen</label>
+  <input id="profileKey" placeholder="leer = alle Regeln ohne Kennzeichen" />
+  <div>
+    <button id="save">Speichern</button>
+    <button id="ping" class="secondary">KlarWin prüfen</button>
+  </div>
+  <div id="status"></div>
+  <ul id="rules"></ul>
+  <script src="popup.js"></script>
+</body>
+</html>

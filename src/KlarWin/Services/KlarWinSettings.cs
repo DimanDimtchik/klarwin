@@ -16,6 +16,7 @@ public sealed class KlarWinSettings
     public StartLayoutSettings StartLayout { get; set; } = new();
     /// <summary>User-defined upload/download target folders (generic labels + paths).</summary>
     public List<TransferFolderTarget> TransferFolders { get; set; } = [];
+    public BrowserDownloadSettings BrowserDownload { get; set; } = new();
 
     // Appearance
     public string BackgroundMode { get; set; } = "Gradient"; // Gradient | Solid | Image
