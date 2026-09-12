@@ -1527,7 +1527,7 @@ public partial class MainWindow : Window
         }));
         PanelBody.Text =
             $"{folders.Count} Ziel(e). Eintrag wählen → „Ordner öffnen“, dann in der Web-App hoch- oder herunterladen.\n\n" +
-            "„Schnellzugriff“ heftet den Ordner zusätzlich im Windows-Explorer an.";
+            "„Schnellzugriff“ heftet den KlarWin-Namen an (nicht den Windows-Ordnernamen). Unterordner werden nicht mitangeheftet.";
     }
 
     private TransferFolderTarget? GetSelectedTransferFolder()
@@ -1648,9 +1648,9 @@ public partial class MainWindow : Window
             return;
         }
 
-        var (ok, message) = TransferFolderService.PinToQuickAccess(target.Path);
+        var (ok, message) = TransferFolderService.PinToQuickAccess(target.Path, target.Name);
         PanelBody.Text = ok
-            ? $"„{target.Name}“: {message}"
+            ? message
             : message;
         if (!ok) RefreshTransferFolderList();
     }
