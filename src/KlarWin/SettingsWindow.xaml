@@ -99,8 +99,48 @@
                                 Content="ganz-soft.de öffnen" Click="OnOpenWebsite"/>
                         <TextBlock Margin="0,20,0,0" Foreground="#4A5C54" FontSize="13"
                                    Text="KlarWin · GanzSoft · kostenlos nutzbar"/>
+                        <TextBlock Margin="0,8,0,0" Foreground="#4A5C54" FontSize="13"
+                                   Text="Impressum, Datenschutz und Lizenz: Registerkarte „Rechtliches“."/>
                     </StackPanel>
                 </ScrollViewer>
+            </TabItem>
+
+            <TabItem Header="Rechtliches">
+                <Grid Margin="8">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+                    <TextBlock FontFamily="Bahnschrift" FontSize="16" Text="Rechtliche Hinweise"/>
+                    <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,10,0,10">
+                        <RadioButton x:Name="LegalImpressum" Content="Impressum" Margin="0,0,16,0"
+                                     GroupName="LegalDoc" IsChecked="True" Checked="OnLegalDocChanged"/>
+                        <RadioButton x:Name="LegalDatenschutz" Content="Datenschutz" Margin="0,0,16,0"
+                                     GroupName="LegalDoc" Checked="OnLegalDocChanged"/>
+                        <RadioButton x:Name="LegalLizenz" Content="Lizenz" GroupName="LegalDoc"
+                                     Checked="OnLegalDocChanged"/>
+                    </StackPanel>
+                    <Border Grid.Row="2" Background="#F7FAF8" BorderBrush="#C5D4CC" BorderThickness="1" Padding="12">
+                        <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                            <TextBox x:Name="LegalTextBox"
+                                     IsReadOnly="True"
+                                     TextWrapping="Wrap"
+                                     BorderThickness="0"
+                                     Background="Transparent"
+                                     FontFamily="Consolas"
+                                     FontSize="12.5"
+                                     AcceptsReturn="True"
+                                     VerticalScrollBarVisibility="Disabled"/>
+                        </ScrollViewer>
+                    </Border>
+                    <StackPanel Grid.Row="3" Orientation="Horizontal" Margin="0,10,0,0">
+                        <Button Content="Kopieren" Click="OnLegalCopy" Padding="12,6" Margin="0,0,8,0"/>
+                        <Button Content="Website öffnen" Click="OnOpenWebsite" Padding="12,6" Margin="0,0,8,0"/>
+                        <TextBlock x:Name="LegalStandHint" VerticalAlignment="Center" Foreground="#4A5C54" FontSize="12"/>
+                    </StackPanel>
+                </Grid>
             </TabItem>
 
             <TabItem Header="KlarWin Update">

@@ -1,7 +1,9 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Text.RegularExpressions;
 
 namespace KlarWin.Services;
 
@@ -9,11 +11,89 @@ public sealed class TransferFolderTarget
 {
     public string Id { get; set; } = Guid.NewGuid().ToString("N");
     public string Name { get; set; } = "";
+    /// <summary>Path template; may contain placeholders like {yyyy}.</summary>
     public string Path { get; set; } = "";
 }
 
 public static class TransferFolderService
 {
+    private static readonly CultureInfo German = CultureInfo.GetCultureInfo("de-DE");
+
+    public static IReadOnlyList<(string Token, string Example, string Hint)> Placeholders { get; } =
+    [
+        ("{yyyy}", DateTime.Now.ToString("yyyy"), "Jahr (vierstellig) — wechselt am 1.1."),
+        ("{jahr}", DateTime.Now.ToString("yyyy"), "Jahr (deutscher Alias)"),
+        ("{yy}", DateTime.Now.ToString("yy"), "Jahr (zweistellig)"),
+        ("{MM}", DateTime.Now.ToString("MM"), "Monat 01–12"),
+        ("{monat}", DateTime.Now.ToString("MM"), "Monat (Alias)"),
+        ("{MMMM}", DateTime.Now.ToString("MMMM", German), "Monatsname (deutsch)"),
+        ("{dd}", DateTime.Now.ToString("dd"), "Tag 01–31"),
+        ("{yyyy-MM}", DateTime.Now.ToString("yyyy-MM"), "Jahr-Monat, z. B. 2026-09"),
+        ("{yyyyMM}", DateTime.Now.ToString("yyyyMM"), "JahrMonat kompakt"),
+        ("{Q}", (((DateTime.Now.Month - 1) / 3) + 1).ToString(), "Quartal 1–4"),
+        ("{quartal}", (((DateTime.Now.Month - 1) / 3) + 1).ToString(), "Quartal (Alias)"),
+        ("{WW}", ISOWeek.GetWeekOfYear(DateTime.Now).ToString("00"), "Kalenderwoche (ISO)"),
+        ("{kw}", ISOWeek.GetWeekOfYear(DateTime.Now).ToString("00"), "Kalenderwoche (Alias)"),
+        ("{user}", Environment.UserName, "Windows-Benutzername"),
+        ("{documents}", Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "Dokumente-Ordner"),
+        ("{desktop}", Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory), "Desktop"),
+        ("{downloads}", GetDownloadsFolder(), "Downloads-Ordner")
+    ];
+
+    public static string PlaceholdersHelpText()
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("Platzhalter (beim Öffnen/Verschieben aufgelöst):");
+        foreach (var (token, example, hint) in Placeholders)
+            sb.AppendLine($"  {token}  →  {example}  ({hint})");
+        sb.AppendLine();
+        sb.AppendLine("Beispiel: …\\Belege\\{yyyy}  →  …\\Belege\\2026 (ab 01.01.2027 automatisch 2027)");
+        return sb.ToString();
+    }
+
+    /// <summary>Replace path placeholders with values for <paramref name="when"/> (default: now).</summary>
+    public static string ResolvePath(string? template, DateTime? when = null)
+    {
+        if (string.IsNullOrWhiteSpace(template)) return "";
+        var t = when ?? DateTime.Now;
+        var path = template.Trim();
+
+        path = ReplaceIgnoreCase(path, "{yyyy}", t.ToString("yyyy"));
+        path = ReplaceIgnoreCase(path, "{jahr}", t.ToString("yyyy"));
+        path = ReplaceIgnoreCase(path, "{yy}", t.ToString("yy"));
+        path = ReplaceIgnoreCase(path, "{MM}", t.ToString("MM"));
+        path = ReplaceIgnoreCase(path, "{monat}", t.ToString("MM"));
+        path = ReplaceIgnoreCase(path, "{MMMM}", t.ToString("MMMM", German));
+        path = ReplaceIgnoreCase(path, "{dd}", t.ToString("dd"));
+        path = ReplaceIgnoreCase(path, "{tag}", t.ToString("dd"));
+        path = ReplaceIgnoreCase(path, "{yyyy-MM}", t.ToString("yyyy-MM"));
+        path = ReplaceIgnoreCase(path, "{yyyyMM}", t.ToString("yyyyMM"));
+        var q = ((t.Month - 1) / 3) + 1;
+        path = ReplaceIgnoreCase(path, "{Q}", q.ToString());
+        path = ReplaceIgnoreCase(path, "{quartal}", q.ToString());
+        var week = ISOWeek.GetWeekOfYear(t).ToString("00");
+        path = ReplaceIgnoreCase(path, "{WW}", week);
+        path = ReplaceIgnoreCase(path, "{kw}", week);
+        path = ReplaceIgnoreCase(path, "{user}", Environment.UserName);
+        path = ReplaceIgnoreCase(path, "{documents}", Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments));
+        path = ReplaceIgnoreCase(path, "{desktop}", Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory));
+        path = ReplaceIgnoreCase(path, "{downloads}", GetDownloadsFolder());
+
+        try
+        {
+            path = Environment.ExpandEnvironmentVariables(path);
+            if (path.Contains('{')) return path;
+            return Path.GetFullPath(path);
+        }
+        catch
+        {
+            return path;
+        }
+    }
+
+    public static bool ContainsPlaceholders(string? path) =>
+        !string.IsNullOrEmpty(path) && path.Contains('{') && path.Contains('}');
+
     private static string PinRoot =>
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "KlarWin", "TransferPins");
 
@@ -21,7 +101,17 @@ public static class TransferFolderService
     {
         try
         {
-            return !string.IsNullOrWhiteSpace(path) && Directory.Exists(path);
+            var resolved = ResolvePath(path);
+            if (string.IsNullOrWhiteSpace(resolved)) return false;
+            if (Directory.Exists(resolved)) return true;
+            // Template like …\{yyyy}: parent may exist before the year folder is created.
+            if (ContainsPlaceholders(path))
+            {
+                var parent = Path.GetDirectoryName(resolved);
+                return !string.IsNullOrEmpty(parent) && Directory.Exists(parent);
+            }
+
+            return false;
         }
         catch
         {
@@ -29,13 +119,48 @@ public static class TransferFolderService
         }
     }
 
-    public static string StatusLabel(TransferFolderTarget target) =>
-        DirectoryExists(target.Path) ? "Bereit" : "Ordner fehlt";
-
-    public static (bool Ok, string Message) OpenInExplorer(string path)
+    public static string StatusLabel(TransferFolderTarget target)
     {
-        if (!DirectoryExists(path))
-            return (false, "Ordner nicht gefunden. Bitte Ziel bearbeiten oder neu anlegen.");
+        var resolved = ResolvePath(target.Path);
+        if (string.IsNullOrWhiteSpace(resolved)) return "Pfad fehlt";
+        if (Directory.Exists(resolved)) return "Bereit";
+        if (ContainsPlaceholders(target.Path))
+        {
+            var parent = Path.GetDirectoryName(resolved);
+            if (!string.IsNullOrEmpty(parent) && Directory.Exists(parent))
+                return "wird angelegt";
+            return "Ordner fehlt";
+        }
+
+        return "Ordner fehlt";
+    }
+
+    /// <summary>Normalize for storage: keep templates with {…}, otherwise full path.</summary>
+    public static string NormalizeStoredPath(string path)
+    {
+        path = path.Trim();
+        if (ContainsPlaceholders(path)) return path;
+        try { return Path.GetFullPath(path); }
+        catch { return path; }
+    }
+
+    public static (bool Ok, string Message) OpenInExplorer(string pathTemplate)
+    {
+        var path = ResolvePath(pathTemplate);
+        if (string.IsNullOrWhiteSpace(path))
+            return (false, "Pfad ist leer.");
+
+        if (!Directory.Exists(path))
+        {
+            try
+            {
+                Directory.CreateDirectory(path);
+            }
+            catch (Exception ex)
+            {
+                return (false, "Ordner nicht gefunden und konnte nicht angelegt werden:\n" + UserFriendlyErrors.Translate(ex));
+            }
+        }
 
         try
         {
@@ -45,7 +170,8 @@ public static class TransferFolderService
                 Arguments = $"\"{path}\"",
                 UseShellExecute = true
             });
-            return (true, $"Geöffnet: {path}");
+            var note = ContainsPlaceholders(pathTemplate) ? $"\n(aus Vorlage: {pathTemplate})" : "";
+            return (true, $"Geöffnet: {path}{note}");
         }
         catch (Exception ex)
         {
@@ -53,15 +179,14 @@ public static class TransferFolderService
         }
     }
 
-    /// <summary>
-    /// Pins a junction named like the KlarWin label (not the real folder name),
-    /// so Quick Access shows e.g. „IQ Personal“ instead of „Personal“ / parent name.
-    /// Does not pin subfolders — those in Quick Access come from Windows „häufig verwendet“.
-    /// </summary>
-    public static (bool Ok, string Message) PinToQuickAccess(string path, string displayName)
+    public static (bool Ok, string Message) PinToQuickAccess(string pathTemplate, string displayName)
     {
-        if (!DirectoryExists(path))
-            return (false, "Ordner nicht gefunden.");
+        var path = ResolvePath(pathTemplate);
+        if (!Directory.Exists(path))
+        {
+            try { Directory.CreateDirectory(path); }
+            catch { return (false, "Ordner nicht gefunden."); }
+        }
 
         var label = string.IsNullOrWhiteSpace(displayName)
             ? SuggestNameFromPath(path)
@@ -75,13 +200,29 @@ public static class TransferFolderService
                 return pinResult;
 
             return (true,
-                $"„{label}“ im Explorer-Schnellzugriff angeheftet (KlarWin-Name).\n\n" +
-                "Unterordner heftet KlarWin nicht an. Einträge wie Lohnabrechnungen/MA11 stammen von Windows („häufig verwendet“) — die können Sie im Explorer per Rechtsklick „Von Schnellzugriff lösen“ entfernen.");
+                $"„{label}“ im Explorer-Schnellzugriff angeheftet → {path}\n\n" +
+                "Unterordner heftet KlarWin nicht an. „Häufig verwendet“-Einträge kommen von Windows.");
         }
         catch (Exception ex)
         {
             return (false, UserFriendlyErrors.Translate(ex));
         }
+    }
+
+    private static string ReplaceIgnoreCase(string input, string token, string value) =>
+        Regex.Replace(input, Regex.Escape(token), value.Replace("$", "$$"), RegexOptions.IgnoreCase);
+
+    private static string GetDownloadsFolder()
+    {
+        try
+        {
+            var userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            var downloads = Path.Combine(userProfile, "Downloads");
+            if (Directory.Exists(downloads)) return downloads;
+        }
+        catch { /* ignore */ }
+
+        return Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
     }
 
     private static string EnsureNamedPin(string targetPath, string displayName)
@@ -97,7 +238,6 @@ public static class TransferFolderService
                 && existing.Equals(fullTarget, StringComparison.OrdinalIgnoreCase))
                 return pinPath;
 
-            // Replace wrong/old pin link (deletes junction only, not the real folder)
             Directory.Delete(pinPath);
         }
         else if (File.Exists(pinPath))
@@ -111,7 +251,6 @@ public static class TransferFolderService
 
     private static void CreateJunction(string junctionPath, string targetPath)
     {
-        // Directory junction needs no admin; works for local and many synced folders.
         var psi = new ProcessStartInfo
         {
             FileName = "cmd.exe",
@@ -138,7 +277,6 @@ public static class TransferFolderService
             if (!info.Attributes.HasFlag(FileAttributes.ReparsePoint))
                 return Path.GetFullPath(path);
 
-            // Follow the junction once via GetFinalPathNameByHandle-less approach:
             return Path.GetFullPath(path);
         }
         catch
@@ -189,7 +327,8 @@ public static class TransferFolderService
     {
         try
         {
-            var name = Path.GetFileName(path.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+            var resolved = ResolvePath(path);
+            var name = Path.GetFileName(resolved.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
             return string.IsNullOrWhiteSpace(name) ? "Zielordner" : name;
         }
         catch

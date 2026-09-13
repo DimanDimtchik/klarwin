@@ -1603,14 +1603,18 @@ public partial class MainWindow : Window
         PanelBody.Text =
             $"{folders.Count} Ziel(e). „Ordner öffnen“ / „Schnellzugriff“ für manuelle Uploads.\n\n" +
             "Automatische Downloads: Registerkarte „Browser-Erweiterung“.\n" +
-            "Hinweis: Lange Pfade in der Liste sind gekürzt (Ende sichtbar). Volle Pfade unter „Bearbeiten“.";
+            "Platzhalter im Pfad: z. B. …\\Belege\\{yyyy} wechselt am 1.1. automatisch das Jahr.\n" +
+            "Lange Pfade in der Liste sind gekürzt. Volle Pfade und Platzhalter unter „Bearbeiten“.";
     }
 
     private static string FormatPathForList(string path)
     {
         if (string.IsNullOrWhiteSpace(path)) return "";
-        try { path = Path.GetFullPath(path); }
-        catch { /* keep raw */ }
+        if (!TransferFolderService.ContainsPlaceholders(path))
+        {
+            try { path = Path.GetFullPath(path); }
+            catch { /* keep raw */ }
+        }
 
         if (path.Length <= 58) return path;
 
@@ -1710,32 +1714,42 @@ public partial class MainWindow : Window
         var win = new Window
         {
             Title = "Ziel bearbeiten",
-            Width = 640,
-            Height = 300,
+            Width = 680,
+            Height = 480,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
             Owner = this,
             ResizeMode = ResizeMode.CanResize,
-            MinWidth = 520,
-            MinHeight = 280
+            MinWidth = 560,
+            MinHeight = 420
         };
         var stack = new StackPanel { Margin = new Thickness(16) };
         stack.Children.Add(new TextBlock { Text = "Name:", Margin = new Thickness(0, 0, 0, 4) });
         var nameBox = new TextBox { Text = target.Name, Height = 32, Margin = new Thickness(0, 0, 0, 10) };
         stack.Children.Add(nameBox);
-        stack.Children.Add(new TextBlock { Text = "Pfad:", Margin = new Thickness(0, 0, 0, 4) });
+        stack.Children.Add(new TextBlock { Text = "Pfad (Vorlage):", Margin = new Thickness(0, 0, 0, 4) });
 
         var pathFull = new TextBlock
         {
             Text = target.Path,
             TextWrapping = TextWrapping.Wrap,
             FontSize = 13,
-            Margin = new Thickness(0, 0, 0, 8),
+            Margin = new Thickness(0, 0, 0, 4),
             Foreground = new SolidColorBrush(Color.FromRgb(0x4A, 0x5C, 0x54))
         };
         stack.Children.Add(pathFull);
 
-        var pathRow = new Grid { Margin = new Thickness(0, 0, 0, 12) };
+        var preview = new TextBlock
+        {
+            TextWrapping = TextWrapping.Wrap,
+            FontSize = 12,
+            Margin = new Thickness(0, 0, 0, 8),
+            Foreground = new SolidColorBrush(Color.FromRgb(0x2E, 0x6B, 0x4F))
+        };
+        stack.Children.Add(preview);
+
+        var pathRow = new Grid { Margin = new Thickness(0, 0, 0, 8) };
         pathRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        pathRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         pathRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         var pathBox = new TextBox
         {
@@ -1750,12 +1764,30 @@ public partial class MainWindow : Window
             pathBox.SelectionLength = 0;
         }
 
-        pathBox.Loaded += (_, _) => ShowPathStart();
-        pathBox.TextChanged += (_, _) =>
+        void RefreshPreview()
         {
             pathFull.Text = pathBox.Text;
             pathBox.ToolTip = pathBox.Text;
+            var raw = pathBox.Text.Trim();
+            if (string.IsNullOrWhiteSpace(raw))
+            {
+                preview.Text = "";
+                return;
+            }
+
+            var resolved = TransferFolderService.ResolvePath(raw);
+            preview.Text = TransferFolderService.ContainsPlaceholders(raw)
+                ? $"Heute → {resolved}"
+                : $"Vollpfad → {resolved}";
+        }
+
+        pathBox.Loaded += (_, _) =>
+        {
+            ShowPathStart();
+            RefreshPreview();
         };
+        pathBox.TextChanged += (_, _) => RefreshPreview();
+
         var browse = new Button
         {
             Content = "Ordner …",
@@ -1766,24 +1798,71 @@ public partial class MainWindow : Window
         browse.Click += (_, _) =>
         {
             var current = pathBox.Text.Trim();
+            var start = TransferFolderService.ResolvePath(current);
             var dialog = new OpenFolderDialog
             {
                 Title = "Zielordner wählen",
-                InitialDirectory = TransferFolderService.DirectoryExists(current) ? current : ""
+                InitialDirectory = Directory.Exists(start) ? start
+                    : (Directory.Exists(Path.GetDirectoryName(start) ?? "") ? Path.GetDirectoryName(start)! : "")
             };
             if (dialog.ShowDialog(win) == true && !string.IsNullOrWhiteSpace(dialog.FolderName))
             {
                 pathBox.Text = Path.GetFullPath(dialog.FolderName);
-                pathFull.Text = pathBox.Text;
-                pathBox.ToolTip = pathBox.Text;
                 ShowPathStart();
             }
         };
+
+        var yearToken = new Button
+        {
+            Content = "→ {yyyy}",
+            Width = 90,
+            Height = 32,
+            Margin = new Thickness(8, 0, 0, 0),
+            ToolTip = "Letzten Ordnernamen, wenn er das aktuelle Jahr ist, durch {yyyy} ersetzen"
+        };
+        yearToken.Click += (_, _) =>
+        {
+            var raw = pathBox.Text.Trim().TrimEnd('\\', '/');
+            if (string.IsNullOrWhiteSpace(raw)) return;
+            var leaf = Path.GetFileName(raw);
+            var year = DateTime.Now.ToString("yyyy");
+            if (leaf.Equals(year, StringComparison.Ordinal)
+                || leaf.Equals("{yyyy}", StringComparison.OrdinalIgnoreCase)
+                || leaf.Equals("{jahr}", StringComparison.OrdinalIgnoreCase))
+            {
+                var parent = Path.GetDirectoryName(raw) ?? "";
+                pathBox.Text = string.IsNullOrEmpty(parent)
+                    ? "{yyyy}"
+                    : Path.Combine(parent, "{yyyy}");
+                ShowPathStart();
+                return;
+            }
+
+            MessageBox.Show(win,
+                $"Der letzte Ordner heißt „{leaf}“, nicht „{year}“.\n\n" +
+                "Tipp: Ordner … wählen (z. B. …\\Belege\\2026), dann erneut „→ {{yyyy}}“ — " +
+                "oder manuell {{yyyy}} ans Ende schreiben.",
+                "KlarWin",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+        };
+
         Grid.SetColumn(pathBox, 0);
         Grid.SetColumn(browse, 1);
+        Grid.SetColumn(yearToken, 2);
         pathRow.Children.Add(pathBox);
         pathRow.Children.Add(browse);
+        pathRow.Children.Add(yearToken);
         stack.Children.Add(pathRow);
+
+        stack.Children.Add(new TextBlock
+        {
+            Text = TransferFolderService.PlaceholdersHelpText(),
+            TextWrapping = TextWrapping.Wrap,
+            FontSize = 11,
+            Margin = new Thickness(0, 0, 0, 12),
+            Foreground = new SolidColorBrush(Color.FromRgb(0x5A, 0x6A, 0x62))
+        });
 
         var buttons = new DockPanel();
         var delete = new Button
@@ -1836,17 +1915,21 @@ public partial class MainWindow : Window
 
             if (string.IsNullOrWhiteSpace(path) || !TransferFolderService.DirectoryExists(path))
             {
-                MessageBox.Show(win, "Pfad nicht gefunden. Bitte einen vorhandenen Ordner wählen.", "KlarWin",
+                MessageBox.Show(win,
+                    "Pfad nicht gültig. Bei Platzhaltern muss der übergeordnete Ordner existieren " +
+                    "(z. B. …\\Belege bei …\\Belege\\{yyyy}).",
+                    "KlarWin",
                     MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
             }
 
             target.Name = name;
-            target.Path = Path.GetFullPath(path);
+            target.Path = TransferFolderService.NormalizeStoredPath(path);
             _settings.Save();
             win.DialogResult = true;
             RefreshTransferFolderList();
-            PanelBody.Text = $"Ziel „{target.Name}“ aktualisiert.\n{target.Path}";
+            var resolved = TransferFolderService.ResolvePath(target.Path);
+            PanelBody.Text = $"Ziel „{target.Name}“ aktualisiert.\nVorlage: {target.Path}\nHeute: {resolved}";
         };
         var cancel = new Button { Content = "Abbrechen", Width = 100, Height = 34, IsCancel = true };
         right.Children.Add(save);
@@ -1854,7 +1937,11 @@ public partial class MainWindow : Window
         buttons.Children.Add(delete);
         buttons.Children.Add(right);
         stack.Children.Add(buttons);
-        win.Content = stack;
+        win.Content = new ScrollViewer
+        {
+            Content = stack,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto
+        };
         win.ShowDialog();
     }
 

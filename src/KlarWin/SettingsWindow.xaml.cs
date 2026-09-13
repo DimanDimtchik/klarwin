@@ -25,8 +25,40 @@ public partial class SettingsWindow : Window
         {
             Activate();
             Focus();
+            ShowLegalDocument("impressum");
             _ = RefreshKlarWinUpdateAsync();
         };
+    }
+
+    private void OnLegalDocChanged(object sender, RoutedEventArgs e)
+    {
+        if (!IsLoaded) return;
+        if (LegalImpressum.IsChecked == true) ShowLegalDocument("impressum");
+        else if (LegalDatenschutz.IsChecked == true) ShowLegalDocument("datenschutz");
+        else if (LegalLizenz.IsChecked == true) ShowLegalDocument("lizenz");
+    }
+
+    private void ShowLegalDocument(string id)
+    {
+        var doc = LegalDocuments.All.FirstOrDefault(d => d.Id == id);
+        if (doc.Body is null)
+            doc = LegalDocuments.All[0];
+        LegalTextBox.Text = doc.Body.Trim() + "\n";
+        LegalStandHint.Text = $"Stand {LegalDocuments.Stand} · Entwurf in der App";
+    }
+
+    private void OnLegalCopy(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            Clipboard.SetText(LegalTextBox.Text);
+            LegalStandHint.Text = "In die Zwischenablage kopiert.";
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, UserFriendlyErrors.Translate(ex), "KlarWin",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
     }
 
     private void LoadFonts()

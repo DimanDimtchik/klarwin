@@ -315,18 +315,23 @@ public static class BrowserDownloadBridge
     {
         if (!File.Exists(sourceFile))
             return (false, "Download-Datei nicht gefunden.");
-        if (!TransferFolderService.DirectoryExists(folder.Path))
+
+        var destDir = TransferFolderService.ResolvePath(folder.Path);
+        if (string.IsNullOrWhiteSpace(destDir))
             return (false, "Zielordner fehlt.");
 
         try
         {
+            if (!Directory.Exists(destDir))
+                Directory.CreateDirectory(destDir);
+
             var name = Path.GetFileName(sourceFile);
-            var dest = Path.Combine(folder.Path, name);
+            var dest = Path.Combine(destDir, name);
             if (File.Exists(dest))
             {
                 var stem = Path.GetFileNameWithoutExtension(name);
                 var ext = Path.GetExtension(name);
-                dest = Path.Combine(folder.Path, $"{stem}_{DateTime.Now:yyyyMMdd_HHmmss}{ext}");
+                dest = Path.Combine(destDir, $"{stem}_{DateTime.Now:yyyyMMdd_HHmmss}{ext}");
             }
 
             File.Move(sourceFile, dest);
