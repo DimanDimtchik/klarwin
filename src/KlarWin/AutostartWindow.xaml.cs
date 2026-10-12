@@ -11,6 +11,7 @@ namespace KlarWin;
 public sealed class AutostartRow : INotifyPropertyChanged
 {
     private bool _isChecked;
+    private bool _suppressToggle;
 
     public bool IsChecked
     {
@@ -20,15 +21,25 @@ public sealed class AutostartRow : INotifyPropertyChanged
             if (_isChecked == value) return;
             _isChecked = value;
             OnPropertyChanged();
+            if (!_suppressToggle)
+                CheckedChanged?.Invoke(this, EventArgs.Empty);
         }
     }
 
     public string Title { get; init; } = "";
-    public string Subtitle { get; init; } = "";
+    public string Subtitle { get; set; } = "";
     public AutostartEntry? Entry { get; init; }
     public AutostartCandidate? Candidate { get; init; }
 
     public event PropertyChangedEventHandler? PropertyChanged;
+    public event EventHandler? CheckedChanged;
+
+    public void SetCheckedSilent(bool value)
+    {
+        _suppressToggle = true;
+        IsChecked = value;
+        _suppressToggle = false;
+    }
 
     private void OnPropertyChanged([CallerMemberName] string? name = null) =>
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
@@ -60,18 +71,47 @@ public partial class AutostartWindow : Window
         _entryRows.Clear();
         foreach (var entry in _autostart.ListEntries())
         {
-            var status = entry.Enabled ? "Aktiv" : "Inaktiv";
-            _entryRows.Add(new AutostartRow
+            var row = new AutostartRow
             {
                 Title = entry.Name,
-                Subtitle = $"{FriendlyCommand(entry)} ({entry.Location} · {status})",
+                Subtitle = FormatEntrySubtitle(entry),
                 Entry = entry
-            });
+            };
+            row.SetCheckedSilent(entry.Enabled);
+            row.CheckedChanged += OnEntryCheckedChanged;
+            _entryRows.Add(row);
         }
 
+        var active = _entryRows.Count(r => r.Entry?.Enabled == true);
         HintText.Text = _entryRows.Count == 0
-            ? "Keine Autostart-Einträge. „Programm hinzufügen“ zeigt installierte Apps — ohne Ordner-Dialog."
-            : $"{_entryRows.Count} Einträge — per Checkbox auswählen, dann deaktivieren oder aktivieren.";
+            ? "Keine Autostart-Einträge. „Programm hinzufügen“ zeigt installierte Apps — inkl. Store-Apps."
+            : $"{_entryRows.Count} Einträge, {active} aktiv. Haken = startet mit Windows (wie Task-Manager).";
+    }
+
+    private static string FormatEntrySubtitle(AutostartEntry entry)
+    {
+        var status = entry.Enabled ? "Aktiv" : "Inaktiv (deaktiviert)";
+        return $"{FriendlyCommand(entry)} · {entry.Location} · {status}";
+    }
+
+    private void OnEntryCheckedChanged(object? sender, EventArgs e)
+    {
+        if (sender is not AutostartRow { Entry: { } entry } row)
+            return;
+
+        try
+        {
+            var msg = _autostart.SetEnabled(entry, row.IsChecked);
+            // Reload so Enabled/StartupApproved status stays accurate
+            LoadEntries();
+            HintText.Text = msg + "\n" + HintText.Text;
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, UserFriendlyErrors.Translate(ex), "KlarWin",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+            LoadEntries();
+        }
     }
 
     private static string FriendlyCommand(AutostartEntry entry)
@@ -83,15 +123,22 @@ public partial class AutostartWindow : Window
         }
 
         var exe = AutostartService.ExtractExecutablePath(entry.Command);
-        return string.IsNullOrWhiteSpace(exe) ? entry.Command : Path.GetFileName(exe);
+        if (!string.IsNullOrWhiteSpace(exe)
+            && !Path.GetFileName(exe).Equals("explorer.exe", StringComparison.OrdinalIgnoreCase))
+            return Path.GetFileName(exe);
+
+        // Protocol / AppX (z. B. BlueMail über explorer.exe + App-ID)
+        var cmd = entry.Command.Trim();
+        if (cmd.Length > 64) cmd = cmd[..61] + "…";
+        return cmd;
     }
 
     private void ShowEntryChrome()
     {
         EntryList.Visibility = Visibility.Visible;
         CandidateList.Visibility = Visibility.Collapsed;
-        BtnDisable.Visibility = Visibility.Visible;
-        BtnEnable.Visibility = Visibility.Visible;
+        BtnDisable.Visibility = Visibility.Collapsed;
+        BtnEnable.Visibility = Visibility.Collapsed;
         BtnAdd.Visibility = Visibility.Visible;
         BtnStartupFolder.Visibility = Visibility.Visible;
         BtnStartLayout.Visibility = Visibility.Visible;
@@ -125,7 +172,7 @@ public partial class AutostartWindow : Window
         _pickerMode = true;
         ShowPickerChrome();
         _candidateRows.Clear();
-        HintText.Text = "Installierte Programme werden gesammelt …";
+        HintText.Text = "Installierte Programme werden gesammelt (Startmenü, Store, Registry) …";
         BtnConfirmAdd.IsEnabled = false;
 
         var current = _autostart.ListEntries();
@@ -143,16 +190,15 @@ public partial class AutostartWindow : Window
 
         BtnConfirmAdd.IsEnabled = true;
         HintText.Text = _candidateRows.Count == 0
-            ? "Keine weiteren Programme gefunden."
-            : $"{_candidateRows.Count} Programme — auswählen und „Zum Autostart hinzufügen“.";
+            ? "Keine weiteren Programme gefunden (bereits im Autostart sind ausgeblendet)."
+            : $"{_candidateRows.Count} Programme — anhaken und „Zum Autostart hinzufügen“. " +
+              "Schon aktive (z. B. Nextcloud, BlueMail) erscheinen hier nicht.";
     }
 
     private void OnBackClick(object sender, RoutedEventArgs e)
     {
         if (_pickerMode)
-        {
             LoadEntries();
-        }
     }
 
     private void OnConfirmAddClick(object sender, RoutedEventArgs e)
@@ -160,52 +206,20 @@ public partial class AutostartWindow : Window
         var selected = _candidateRows.Where(r => r.IsChecked && r.Candidate is not null).ToList();
         if (selected.Count == 0)
         {
-            MessageBox.Show(this, "Bitte mindestens ein Programm auswählen.", "KlarWin", MessageBoxButton.OK, MessageBoxImage.Information);
+            MessageBox.Show(this, "Bitte mindestens ein Programm auswählen.", "KlarWin",
+                MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
 
-        var messages = new List<string>();
-        foreach (var row in selected)
-        {
-            messages.Add(_autostart.AddToAutostart(row.Candidate!));
-        }
-
-        MessageBox.Show(this, string.Join("\n", messages), "KlarWin", MessageBoxButton.OK, MessageBoxImage.Information);
+        var messages = selected.Select(row => _autostart.AddToAutostart(row.Candidate!)).ToList();
+        MessageBox.Show(this, string.Join("\n", messages), "KlarWin",
+            MessageBoxButton.OK, MessageBoxImage.Information);
         LoadEntries();
     }
 
-    private void OnDisableClick(object sender, RoutedEventArgs e)
-    {
-        var selected = _entryRows.Where(r => r.IsChecked && r.Entry is { Enabled: true }).Select(r => r.Entry!).ToList();
-        if (selected.Count == 0)
-        {
-            MessageBox.Show(this, "Bitte aktive Einträge auswählen.", "KlarWin", MessageBoxButton.OK, MessageBoxImage.Information);
-            return;
-        }
+    private void OnDisableClick(object sender, RoutedEventArgs e) { /* replaced by checkbox toggle */ }
 
-        if (MessageBox.Show(this, $"{selected.Count} Eintrag/Einträge deaktivieren?", "KlarWin", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes)
-        {
-            return;
-        }
-
-        var notes = selected.Select(entry => _autostart.Disable(entry)).ToList();
-        MessageBox.Show(this, string.Join("\n", notes), "KlarWin", MessageBoxButton.OK, MessageBoxImage.Information);
-        LoadEntries();
-    }
-
-    private void OnEnableClick(object sender, RoutedEventArgs e)
-    {
-        var selected = _entryRows.Where(r => r.IsChecked && r.Entry is { Enabled: false }).Select(r => r.Entry!).ToList();
-        if (selected.Count == 0)
-        {
-            MessageBox.Show(this, "Bitte inaktive Einträge auswählen.", "KlarWin", MessageBoxButton.OK, MessageBoxImage.Information);
-            return;
-        }
-
-        var notes = selected.Select(entry => _autostart.Enable(entry)).ToList();
-        MessageBox.Show(this, string.Join("\n", notes), "KlarWin", MessageBoxButton.OK, MessageBoxImage.Information);
-        LoadEntries();
-    }
+    private void OnEnableClick(object sender, RoutedEventArgs e) { /* replaced by checkbox toggle */ }
 
     private void OnStartupFolderClick(object sender, RoutedEventArgs e)
     {

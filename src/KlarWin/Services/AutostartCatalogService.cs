@@ -14,58 +14,58 @@ public sealed class AutostartCatalogService
 {
     public IReadOnlyList<AutostartCandidate> DiscoverCandidates(IReadOnlyList<AutostartEntry> currentAutostart)
     {
-        var running = CollectAutostartExecutables(currentAutostart);
+        var already = CollectAlreadyAutostart(currentAutostart);
         var byPath = new Dictionary<string, AutostartCandidate>(StringComparer.OrdinalIgnoreCase);
 
         void TryAdd(string? name, string? exePath, string source)
         {
             if (string.IsNullOrWhiteSpace(name) || string.IsNullOrWhiteSpace(exePath))
-            {
                 return;
-            }
 
             var path = exePath.Trim().Trim('"');
             if (!path.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
-            {
                 return;
-            }
 
-            if (!File.Exists(path))
+            try
             {
-                return;
+                if (!File.Exists(path))
+                    return;
+                path = Path.GetFullPath(path);
             }
-
-            if (running.Contains(path))
+            catch
             {
                 return;
             }
 
             if (IsWindowsSystemBinary(path))
-            {
                 return;
-            }
 
             name = name.Trim();
             if (name.Length == 0)
-            {
                 name = Path.GetFileNameWithoutExtension(path);
-            }
+
+            if (already.Paths.Contains(path) || already.Names.Contains(name))
+                return;
+
+            // Skip trivial stubs that only wrap explorer
+            if (Path.GetFileName(path).Equals("explorer.exe", StringComparison.OrdinalIgnoreCase))
+                return;
 
             if (byPath.TryGetValue(path, out var existing))
             {
                 if (name.Length > existing.Name.Length)
-                {
                     byPath[path] = new AutostartCandidate { Name = name, ExecutablePath = path, Source = source };
-                }
-
                 return;
             }
 
             byPath[path] = new AutostartCandidate { Name = name, ExecutablePath = path, Source = source };
         }
 
+        foreach (var app in InstalledAppsCatalogService.ListApps(1200))
+            TryAdd(app.Name, app.ExePath, string.IsNullOrWhiteSpace(app.Source) ? "Installiert" : app.Source);
+
         AddFromAppPaths(TryAdd);
-        AddFromStartMenu(TryAdd);
+        AddFromWindowsApps(TryAdd);
         AddFromUninstallRegistry(TryAdd);
 
         return byPath.Values
@@ -73,30 +73,44 @@ public sealed class AutostartCatalogService
             .ToList();
     }
 
-    private static HashSet<string> CollectAutostartExecutables(IReadOnlyList<AutostartEntry> entries)
+    private static (HashSet<string> Paths, HashSet<string> Names) CollectAlreadyAutostart(
+        IReadOnlyList<AutostartEntry> entries)
     {
-        var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var paths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
         foreach (var entry in entries)
         {
+            if (!string.IsNullOrWhiteSpace(entry.Name))
+                names.Add(entry.Name.Trim());
+
             if (entry.Location.Contains("Ordner", StringComparison.Ordinal))
             {
                 var target = ResolveShortcutTarget(entry.Command) ?? entry.Command;
-                if (target.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) && File.Exists(target))
-                {
-                    set.Add(Path.GetFullPath(target));
-                }
-
+                TryAddPath(paths, target);
                 continue;
             }
 
             var exe = AutostartService.ExtractExecutablePath(entry.Command);
-            if (!string.IsNullOrWhiteSpace(exe) && File.Exists(exe))
-            {
-                set.Add(Path.GetFullPath(exe));
-            }
+            TryAddPath(paths, exe);
+            // Protocol / AppX launchers (BlueMail → explorer.exe + protocol): keep name match only
         }
 
-        return set;
+        return (paths, names);
+    }
+
+    private static void TryAddPath(HashSet<string> paths, string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path)) return;
+        try
+        {
+            if (File.Exists(path))
+                paths.Add(Path.GetFullPath(path));
+        }
+        catch
+        {
+            // ignore
+        }
     }
 
     private static bool IsWindowsSystemBinary(string path)
@@ -112,6 +126,69 @@ public sealed class AutostartCatalogService
         {
             return false;
         }
+    }
+
+    private static void AddFromWindowsApps(Action<string?, string?, string> tryAdd)
+    {
+        try
+        {
+            var root = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "Microsoft", "WindowsApps");
+            if (!Directory.Exists(root)) return;
+
+            foreach (var exe in Directory.EnumerateFiles(root, "*.exe", SearchOption.TopDirectoryOnly))
+            {
+                var name = Path.GetFileNameWithoutExtension(exe);
+                if (name.StartsWith("Microsoft.", StringComparison.OrdinalIgnoreCase)
+                    || name.Equals("GameBar", StringComparison.OrdinalIgnoreCase)
+                    || name.Contains("Xbox", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                tryAdd(PrettyStoreName(name), exe, "Store / WindowsApps");
+            }
+
+            // Nested package folders (e.g. OpenAI.ChatGPT-Desktop_…\chatgpt-classic.exe)
+            foreach (var dir in Directory.EnumerateDirectories(root))
+            {
+                try
+                {
+                    foreach (var exe in Directory.EnumerateFiles(dir, "*.exe", SearchOption.TopDirectoryOnly).Take(4))
+                    {
+                        var leaf = Path.GetFileNameWithoutExtension(exe);
+                        var folder = Path.GetFileName(dir);
+                        var label = PrettyStoreName(leaf);
+                        if (folder.Contains("ChatGPT", StringComparison.OrdinalIgnoreCase)
+                            || leaf.Contains("chatgpt", StringComparison.OrdinalIgnoreCase))
+                            label = "ChatGPT";
+                        else if (folder.Contains("BlueMail", StringComparison.OrdinalIgnoreCase))
+                            label = "BlueMail";
+                        else if (folder.Contains("Adobe", StringComparison.OrdinalIgnoreCase)
+                                 && (folder.Contains("Express", StringComparison.OrdinalIgnoreCase)
+                                     || leaf.Contains("Express", StringComparison.OrdinalIgnoreCase)))
+                            label = "Adobe Express";
+
+                        tryAdd(label, exe, "Store / WindowsApps");
+                    }
+                }
+                catch
+                {
+                    // access denied on some package dirs
+                }
+            }
+        }
+        catch
+        {
+            // ignore
+        }
+    }
+
+    private static string PrettyStoreName(string raw)
+    {
+        raw = raw.Replace('-', ' ').Replace('_', ' ').Trim();
+        if (raw.EndsWith(" classic", StringComparison.OrdinalIgnoreCase))
+            raw = raw[..^" classic".Length].Trim();
+        return raw.Length == 0 ? "App" : raw;
     }
 
     private static void AddFromAppPaths(Action<string?, string?, string> tryAdd)
@@ -133,42 +210,6 @@ public sealed class AutostartCatalogService
             catch
             {
                 // ignore hive access issues
-            }
-        }
-    }
-
-    private static void AddFromStartMenu(Action<string?, string?, string> tryAdd)
-    {
-        var roots = new[]
-        {
-            Environment.GetFolderPath(Environment.SpecialFolder.Programs),
-            Environment.GetFolderPath(Environment.SpecialFolder.CommonPrograms),
-            Environment.GetFolderPath(Environment.SpecialFolder.Desktop),
-            Environment.GetFolderPath(Environment.SpecialFolder.CommonDesktopDirectory)
-        };
-
-        foreach (var root in roots.Distinct(StringComparer.OrdinalIgnoreCase))
-        {
-            if (!Directory.Exists(root)) continue;
-            try
-            {
-                foreach (var file in Directory.EnumerateFiles(root, "*.*", SearchOption.AllDirectories))
-                {
-                    var ext = Path.GetExtension(file);
-                    if (ext.Equals(".lnk", StringComparison.OrdinalIgnoreCase))
-                    {
-                        var target = ResolveShortcutTarget(file);
-                        tryAdd(Path.GetFileNameWithoutExtension(file), target, "Startmenü");
-                    }
-                    else if (ext.Equals(".exe", StringComparison.OrdinalIgnoreCase))
-                    {
-                        tryAdd(Path.GetFileNameWithoutExtension(file), file, "Startmenü");
-                    }
-                }
-            }
-            catch
-            {
-                // skip unreadable start menu folders
             }
         }
     }
@@ -207,9 +248,7 @@ public sealed class AutostartCatalogService
                         if (string.IsNullOrWhiteSpace(install) || !Directory.Exists(install)) continue;
 
                         foreach (var exe in Directory.EnumerateFiles(install, "*.exe", SearchOption.TopDirectoryOnly).Take(3))
-                        {
                             tryAdd(name, exe, "Installiert");
-                        }
                     }
                 }
                 catch
@@ -226,9 +265,7 @@ public sealed class AutostartCatalogService
         displayIcon = displayIcon.Trim().Trim('"');
         var comma = displayIcon.IndexOf(',');
         if (comma > 0)
-        {
             displayIcon = displayIcon[..comma].Trim().Trim('"');
-        }
 
         return displayIcon.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) ? displayIcon : null;
     }
@@ -236,9 +273,7 @@ public sealed class AutostartCatalogService
     internal static string? ResolveShortcutTarget(string path)
     {
         if (!path.EndsWith(".lnk", StringComparison.OrdinalIgnoreCase))
-        {
             return File.Exists(path) ? path : null;
-        }
 
         try
         {

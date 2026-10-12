@@ -55,10 +55,10 @@
 
         <WrapPanel Grid.Row="3" Margin="0,16,0,0" HorizontalAlignment="Left">
             <Button x:Name="BtnDisable" Style="{StaticResource ActionButton}" Margin="0,0,10,8"
-                    Content="Auswahl deaktivieren" Click="OnDisableClick"/>
+                    Content="Auswahl deaktivieren" Click="OnDisableClick" Visibility="Collapsed"/>
             <Button x:Name="BtnEnable" Style="{StaticResource GhostButton}" Margin="0,0,10,8"
-                    Content="Auswahl aktivieren" Click="OnEnableClick"/>
-            <Button x:Name="BtnAdd" Style="{StaticResource GhostButton}" Margin="0,0,10,8"
+                    Content="Auswahl aktivieren" Click="OnEnableClick" Visibility="Collapsed"/>
+            <Button x:Name="BtnAdd" Style="{StaticResource ActionButton}" Margin="0,0,10,8"
                     Content="Programm hinzufügen" Click="OnAddProgramsClick"/>
             <Button x:Name="BtnStartupFolder" Style="{StaticResource GhostButton}" Margin="0,0,10,8"
                     Content="Autostart-Ordner …" Click="OnStartupFolderClick"/>
