@@ -35,7 +35,10 @@ public partial class FeaturePanelWindow : Window
             Detach(element);
             if (element is FrameworkElement fe)
             {
-                fe.Margin = new Thickness(10, 0, 0, 0);
+                // First control flush left; spacing between controls
+                fe.Margin = ButtonHost.Children.Count == 0
+                    ? new Thickness(0, 0, 0, 0)
+                    : new Thickness(10, 0, 0, 0);
             }
 
             ButtonHost.Children.Add(element);

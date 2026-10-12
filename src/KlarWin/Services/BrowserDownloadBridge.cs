@@ -267,14 +267,14 @@ public static class BrowserDownloadBridge
         if (!settings.BrowserDownload.Enabled || settings.BrowserDownload.Rules.Count == 0)
             return null;
 
-        var host = ExtractHost(url) ?? ExtractHost(referrer) ?? "";
-        if (string.IsNullOrEmpty(host)) return null;
+        var hosts = CollectHosts(url, referrer);
+        if (hosts.Count == 0) return null;
 
         var profile = (profileKey ?? "").Trim();
         foreach (var rule in settings.BrowserDownload.Rules)
         {
             if (string.IsNullOrWhiteSpace(rule.HostPattern)) continue;
-            if (!HostMatches(host, rule.HostPattern)) continue;
+            if (!hosts.Any(h => HostMatches(h, rule.HostPattern))) continue;
             if (!string.IsNullOrWhiteSpace(rule.ProfileKey)
                 && !rule.ProfileKey.Trim().Equals(profile, StringComparison.OrdinalIgnoreCase))
                 continue;
@@ -287,6 +287,23 @@ public static class BrowserDownloadBridge
         return null;
     }
 
+    /// <summary>Hosts from download URL and referrer (unwraps chrome-extension://…/https://…).</summary>
+    public static IReadOnlyList<string> CollectHosts(params string?[] urls)
+    {
+        var list = new List<string>();
+        foreach (var raw in urls)
+        {
+            foreach (var host in ExtractAllHosts(raw))
+            {
+                if (list.Exists(h => h.Equals(host, StringComparison.OrdinalIgnoreCase)))
+                    continue;
+                list.Add(host);
+            }
+        }
+
+        return list;
+    }
+
     public static bool HostMatches(string host, string pattern)
     {
         host = host.Trim().ToLowerInvariant();
@@ -297,17 +314,61 @@ public static class BrowserDownloadBridge
         return host == pattern || host.EndsWith("." + pattern, StringComparison.Ordinal);
     }
 
-    public static string? ExtractHost(string? url)
+    public static string? ExtractHost(string? url) =>
+        ExtractAllHosts(url).FirstOrDefault();
+
+    /// <summary>
+    /// Prefer real http(s) hosts. Adobe Viewer wraps downloads as
+    /// chrome-extension://&lt;id&gt;/https://www.amazon.de/…
+    /// </summary>
+    public static IEnumerable<string> ExtractAllHosts(string? url)
     {
-        if (string.IsNullOrWhiteSpace(url)) return null;
-        try
+        if (string.IsNullOrWhiteSpace(url)) yield break;
+
+        foreach (var candidate in EnumerateUrlCandidates(url))
         {
-            if (!Uri.TryCreate(url, UriKind.Absolute, out var uri)) return null;
-            return uri.Host;
+            if (!Uri.TryCreate(candidate, UriKind.Absolute, out var uri)) continue;
+            if (uri.Scheme is not ("http" or "https")) continue;
+            if (string.IsNullOrWhiteSpace(uri.Host)) continue;
+            yield return uri.Host;
         }
-        catch
+    }
+
+    private static IEnumerable<string> EnumerateUrlCandidates(string url)
+    {
+        url = url.Trim();
+        yield return url;
+
+        // Nested http(s) after chrome-extension://id/ or anywhere in the string
+        foreach (var marker in new[] { "https://", "http://" })
         {
-            return null;
+            var idx = url.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
+            while (idx >= 0)
+            {
+                var slice = url[idx..];
+                // Trim accidental trailing junk from some viewers
+                var end = slice.IndexOfAny([' ', '\t', '"', '\'', '>']);
+                yield return end > 0 ? slice[..end] : slice;
+                idx = url.IndexOf(marker, idx + marker.Length, StringComparison.OrdinalIgnoreCase);
+            }
+        }
+
+        if (Uri.TryCreate(url, UriKind.Absolute, out var outer))
+        {
+            var path = outer.AbsolutePath.TrimStart('/');
+            if (path.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
+                || path.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+                yield return path;
+
+            // AbsolutePath may percent-encode the nested URL — decode once
+            string? decoded = null;
+            try { decoded = Uri.UnescapeDataString(path); }
+            catch { /* ignore */ }
+
+            if (!string.IsNullOrEmpty(decoded)
+                && (decoded.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
+                    || decoded.StartsWith("https://", StringComparison.OrdinalIgnoreCase)))
+                yield return decoded;
         }
     }
 

@@ -1,7 +1,7 @@
 ﻿{
   "manifest_version": 3,
   "name": "KlarWin Download-Ziele",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Verschiebt Downloads von bestimmten Websites in die in KlarWin hinterlegten Zielordner. Pro Browser-Profil konfigurierbar.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAuJhdgqoSwdv1qlF+PyDNEXgpSr7axyTyeV5GsCVI5mujInndh3euo+54z3SC4xFHLlRCHGAleKqbVtvROFoGOIr+Uxs+mpdPELjH9K2azk1xli82TaPB/z4xKiN59NbzqkPGtxHJ5FfIfn6tGQSzL3QR/ds4CqPFQBWZMQOdJO6B/zhEoq+KbwpapG5ieex8hy2beOdILj+UIoG8irydXA1P40XMqXB2/ZDEfOteAlYhJKbdM6flNCyVuMvAbnrPD5IYJ8eGBm4bhQik5iY2mGqrwVXMQ5YnoDjZ2iFatcRr2msWRrv0oCiH81Bc5ItEfhcwkYBOwh8j3uAOB6GnUQIDAQAB",
   "permissions": ["downloads", "storage", "nativeMessaging", "notifications"],

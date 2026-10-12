@@ -1964,7 +1964,20 @@ public partial class MainWindow : Window
             ResizeMode = ResizeMode.NoResize
         };
         var stack = new StackPanel { Margin = new Thickness(16) };
-        stack.Children.Add(new TextBlock { Text = "Website (z. B. lexoffice.de oder shiftbase.com):", Margin = new Thickness(0, 0, 0, 4) });
+        stack.Children.Add(new TextBlock
+        {
+            Text = "Website (z. B. amazon.de oder lexoffice.de):",
+            Margin = new Thickness(0, 0, 0, 4)
+        });
+        stack.Children.Add(new TextBlock
+        {
+            Text = "Nur die Domain — reicht auch bei Adobe-Viewer (chrome-extension://…/https://www.amazon.de/…). " +
+                   "Optional: *.amazon.de für Subdomains. Kein freies *…*-Regex.",
+            TextWrapping = TextWrapping.Wrap,
+            FontSize = 12,
+            Foreground = new SolidColorBrush(Color.FromRgb(0x4A, 0x5C, 0x54)),
+            Margin = new Thickness(0, 0, 0, 8)
+        });
         var hostBox = new TextBox { Height = 32, Margin = new Thickness(0, 0, 0, 10) };
         stack.Children.Add(hostBox);
         stack.Children.Add(new TextBlock { Text = "Zielordner:", Margin = new Thickness(0, 0, 0, 4) });

@@ -34,7 +34,9 @@ chrome.downloads.onChanged.addListener(async (delta) => {
 
   try {
     const [item] = await chrome.downloads.search({ id: delta.id });
-    if (!item || item.byExtensionId) return;
+    if (!item) return;
+    // Skip only our own downloads — Adobe/other viewers set byExtensionId but must still relocate
+    if (item.byExtensionId && item.byExtensionId === chrome.runtime.id) return;
     if (!item.filename || item.filename.endsWith(".crdownload")) return;
 
     const profileKey = await getProfileKey();
