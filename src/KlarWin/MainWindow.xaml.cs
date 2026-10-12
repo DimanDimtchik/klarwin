@@ -31,7 +31,7 @@ public partial class MainWindow : Window
     private readonly CleanupService _cleanup = new();
     private readonly SpeedService _speed = new();
     private readonly ShortcutOverlayService _overlay = new();
-    private readonly AutostartService _autostart;
+    private readonly AutostartService _autostart = new();
     private readonly SecureWipeService _wipe = new();
     private readonly RecoveryService _recovery = new();
     private readonly LicenseKeyService _keys = new();
@@ -100,7 +100,6 @@ public partial class MainWindow : Window
 
     public MainWindow()
     {
-        _autostart = new AutostartService(_settings);
         InitializeComponent();
         PopulateTileFeatureLists();
         _tileButtons =
@@ -2283,20 +2282,27 @@ public partial class MainWindow : Window
         SecondaryAction.Visibility = Visibility.Visible;
     });
 
-    private void OnAutostartClick(object sender, RoutedEventArgs e) => SafeTile(() =>
+    private void OnAutostartClick(object sender, RoutedEventArgs e)
     {
-        _mode = "autostart";
-        ResetPanelChrome();
-        PanelTitle.Text = "Autostart";
-        PrimaryAction.Content = "Auswahl deaktivieren";
-        SecondaryAction.Content = "Auswahl aktivieren";
-        SecondaryAction.Visibility = Visibility.Visible;
-        TertiaryAction.Content = "Programm hinzufügen";
-        TertiaryAction.Visibility = Visibility.Visible;
-        QuaternaryAction.Content = "Startlayout …";
-        QuaternaryAction.Visibility = Visibility.Visible;
-        _ = RefreshAutostartListAsync();
-    });
+        try
+        {
+            _mode = "autostart";
+            UpdateActiveTileHighlight();
+            var win = new AutostartWindow { Owner = this };
+            win.ShowDialog();
+            if (win.OpenStartLayoutRequested)
+            {
+                SafeTile(OpenStartLayoutPanel);
+            }
+        }
+        catch (Exception ex)
+        {
+            PanelTitle.Text = "Fehler";
+            PanelBody.Text = UserFriendlyErrors.Translate(ex);
+            UpdateActiveTileHighlight();
+            OpenFeaturePanel();
+        }
+    }
 
     private void OpenStartLayoutPanel()
     {
@@ -3247,12 +3253,15 @@ public partial class MainWindow : Window
         {
             var items = await Task.Run(() => _autostart.ListEntries());
             var iconPairs = await Task.WhenAll(items.Select(item => Task.Run(() =>
-                (Item: item, Icon: AppIconHelper.LoadSafe(item.IconSource)))));
+            {
+                var exe = AutostartService.ExtractExecutablePath(item.Command) ?? item.Command;
+                return (Item: item, Icon: AppIconHelper.LoadSafe(exe));
+            })));
 
             var checkItems = iconPairs.Select(pair =>
             (
                 AutostartKey(pair.Item),
-                $"{pair.Item.Name} — {pair.Item.Description}",
+                $"{pair.Item.Name} — {Path.GetFileName(AutostartService.ExtractExecutablePath(pair.Item.Command) ?? pair.Item.Command)}",
                 $"{pair.Item.Location} · {(pair.Item.Enabled ? "Aktiv" : "Deaktiviert")}",
                 false,
                 (object)pair.Item,

@@ -1,6 +1,6 @@
 {
-  "version": "1.3.59",
+  "version": "1.3.60",
   "url": "https://ganz-soft.de/klarwin/KlarWin-Setup.zip",
-  "notes": "Browser-Download: amazon.de auch bei Adobe-Viewer-URLs; Feature-Fenster: Buttons unter dem Titel.",
-  "published": "2026-09-14"
+  "notes": "Autostart-Fenster mit Checkboxen und Programm-Katalog (Cloud-Agent); Adobe-Download-URLs; Feature-Fenster-Layout.",
+  "published": "2026-10-12"
 }
