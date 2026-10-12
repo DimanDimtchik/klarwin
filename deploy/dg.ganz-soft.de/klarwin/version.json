@@ -1,6 +1,6 @@
 {
   "version": "1.1.2",
-  "url": "https://github.com/DimanDimtchik/klarwin/releases/download/v1.1.0/KlarWin-Setup.zip",
-  "notes": "Update-Kachel, Router herstelleruebergreifend, Netzwerk- und KI-Last.",
-  "published": "2026-08-30"
+  "url": "https://dg.ganz-soft.de/klarwin/KlarWin-Setup.zip",
+  "notes": "Autostart-Fenster mit Checkboxen; Programme aus Katalog hinzufuegen (ohne System32-Dialog).",
+  "published": "2026-10-12"
 }
