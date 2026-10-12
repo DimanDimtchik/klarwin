@@ -10,22 +10,37 @@ public sealed class AutostartEntry
     public string Command { get; init; } = "";
     public string Location { get; init; } = "";
     public bool Enabled { get; init; } = true;
+    public bool IsRegistry { get; init; }
+    public bool IsLocalMachine { get; init; }
 }
 
 public sealed class AutostartService
 {
+    private const string DisabledRunKey = @"Software\GanzSoft\KlarWin\DisabledRun";
+
     public IReadOnlyList<AutostartEntry> ListEntries()
     {
         var list = new List<AutostartEntry>();
-        AddRegistry(list, Registry.CurrentUser, @"Software\Microsoft\Windows\CurrentVersion\Run", "Aktueller Benutzer");
-        AddRegistry(list, Registry.LocalMachine, @"Software\Microsoft\Windows\CurrentVersion\Run", "Dieser PC");
+        AddRegistry(list, Registry.CurrentUser, @"Software\Microsoft\Windows\CurrentVersion\Run", "Aktueller Benutzer", false);
+        AddRegistry(list, Registry.LocalMachine, @"Software\Microsoft\Windows\CurrentVersion\Run", "Dieser PC (alle Benutzer)", true);
         AddStartupFolder(list, Environment.GetFolderPath(Environment.SpecialFolder.Startup), "Autostart-Ordner (Benutzer)");
         AddStartupFolder(list, Environment.GetFolderPath(Environment.SpecialFolder.CommonStartup), "Autostart-Ordner (Alle)");
+        AddDisabledRegistryBackups(list);
         return list.OrderBy(e => e.Name, StringComparer.CurrentCultureIgnoreCase).ToList();
     }
 
     public string Disable(AutostartEntry entry)
     {
+        if (!entry.Enabled)
+        {
+            return $"„{entry.Name}“ ist bereits inaktiv.";
+        }
+
+        if (entry.IsRegistry)
+        {
+            return DisableRegistryEntry(entry);
+        }
+
         if (entry.Location.Contains("Ordner", StringComparison.Ordinal))
         {
             if (File.Exists(entry.Command))
@@ -34,18 +49,38 @@ public sealed class AutostartService
                 File.Move(entry.Command, disabled, overwrite: true);
                 return $"{entry.Name} deaktiviert.";
             }
+
             return "Datei nicht gefunden.";
         }
 
-        var hive = entry.Location.Contains("Benutzer", StringComparison.Ordinal) ? Registry.CurrentUser : Registry.LocalMachine;
-        using var key = hive.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run", true);
-        if (key is null)
+        return "Eintragstyp nicht unterstützt.";
+    }
+
+    public string Enable(AutostartEntry entry)
+    {
+        if (entry.Enabled)
         {
-            return "Registrierung nicht erreichbar. Als Administrator starten.";
+            return $"„{entry.Name}“ ist bereits aktiv.";
         }
 
-        key.DeleteValue(entry.Name, false);
-        return $"{entry.Name} aus dem Autostart entfernt.";
+        if (entry.IsRegistry)
+        {
+            return RestoreRegistryEntry(entry);
+        }
+
+        if (entry.Location.Contains("Ordner", StringComparison.Ordinal) && entry.Command.EndsWith(".disabled", StringComparison.OrdinalIgnoreCase))
+        {
+            var enabledPath = entry.Command[..^".disabled".Length];
+            if (!File.Exists(entry.Command))
+            {
+                return "Datei nicht gefunden.";
+            }
+
+            File.Move(entry.Command, enabledPath, overwrite: true);
+            return $"{entry.Name} wieder aktiviert.";
+        }
+
+        return "Eintragstyp nicht unterstützt.";
     }
 
     public void OpenTaskManagerStartup()
@@ -128,7 +163,95 @@ public sealed class AutostartService
         link.Save();
     }
 
-    private static void AddRegistry(List<AutostartEntry> list, RegistryKey root, string path, string location)
+    private string DisableRegistryEntry(AutostartEntry entry)
+    {
+        var hive = entry.IsLocalMachine ? Registry.LocalMachine : Registry.CurrentUser;
+        var runPath = @"Software\Microsoft\Windows\CurrentVersion\Run";
+        try
+        {
+            using var runKey = hive.OpenSubKey(runPath, true);
+            if (runKey is null)
+            {
+                return "Registrierung nicht erreichbar. Als Administrator starten.";
+            }
+
+            var command = runKey.GetValue(entry.Name)?.ToString() ?? entry.Command;
+            runKey.DeleteValue(entry.Name, false);
+            using var backup = Registry.CurrentUser.CreateSubKey(DisabledRunKey, true);
+            backup?.SetValue(entry.Name, $"{(entry.IsLocalMachine ? "LM" : "CU")}|{command}", RegistryValueKind.String);
+            return $"{entry.Name} deaktiviert.";
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return "Keine Berechtigung. KlarWin als Administrator starten.";
+        }
+    }
+
+    private string RestoreRegistryEntry(AutostartEntry entry)
+    {
+        try
+        {
+            using var backup = Registry.CurrentUser.OpenSubKey(DisabledRunKey, false);
+            var payload = backup?.GetValue(entry.Name)?.ToString();
+            if (string.IsNullOrWhiteSpace(payload))
+            {
+                return "Backup-Eintrag nicht gefunden.";
+            }
+
+            var parts = payload.Split('|', 2);
+            if (parts.Length != 2)
+            {
+                return "Backup-Eintrag ist ungültig.";
+            }
+
+            var hive = parts[0] == "LM" ? Registry.LocalMachine : Registry.CurrentUser;
+            using var runKey = hive.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run", true);
+            if (runKey is null)
+            {
+                return "Registrierung nicht erreichbar. Als Administrator starten.";
+            }
+
+            runKey.SetValue(entry.Name, parts[1], RegistryValueKind.String);
+            using var backupWrite = Registry.CurrentUser.OpenSubKey(DisabledRunKey, true);
+            backupWrite?.DeleteValue(entry.Name, false);
+            return $"{entry.Name} wieder aktiviert.";
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return "Keine Berechtigung. KlarWin als Administrator starten.";
+        }
+    }
+
+    private static void AddDisabledRegistryBackups(List<AutostartEntry> list)
+    {
+        try
+        {
+            using var backup = Registry.CurrentUser.OpenSubKey(DisabledRunKey, false);
+            if (backup is null) return;
+            foreach (var name in backup.GetValueNames())
+            {
+                var payload = backup.GetValue(name)?.ToString() ?? "";
+                var parts = payload.Split('|', 2);
+                var isLm = parts.Length == 2 && parts[0] == "LM";
+                var command = parts.Length == 2 ? parts[1] : payload;
+                list.Add(new AutostartEntry
+                {
+                    Name = name,
+                    Command = command,
+                    Location = isLm ? "Dieser PC (alle Benutzer)" : "Aktueller Benutzer",
+                    Enabled = false,
+                    IsRegistry = true,
+                    IsLocalMachine = isLm
+                });
+            }
+        }
+        catch
+        {
+            // ignore
+        }
+    }
+
+    private static void AddRegistry(List<AutostartEntry> list, RegistryKey root, string path, string location, bool isLocalMachine)
     {
         try
         {
@@ -137,7 +260,15 @@ public sealed class AutostartService
             foreach (var name in key.GetValueNames())
             {
                 var value = key.GetValue(name)?.ToString() ?? "";
-                list.Add(new AutostartEntry { Name = name, Command = value, Location = location });
+                list.Add(new AutostartEntry
+                {
+                    Name = name,
+                    Command = value,
+                    Location = location,
+                    Enabled = true,
+                    IsRegistry = true,
+                    IsLocalMachine = isLocalMachine
+                });
             }
         }
         catch
@@ -151,11 +282,24 @@ public sealed class AutostartService
         if (!Directory.Exists(folder)) return;
         foreach (var file in Directory.EnumerateFiles(folder))
         {
+            if (file.EndsWith(".disabled", StringComparison.OrdinalIgnoreCase))
+            {
+                list.Add(new AutostartEntry
+                {
+                    Name = Path.GetFileNameWithoutExtension(Path.GetFileNameWithoutExtension(file)),
+                    Command = file,
+                    Location = location,
+                    Enabled = false
+                });
+                continue;
+            }
+
             list.Add(new AutostartEntry
             {
                 Name = Path.GetFileNameWithoutExtension(file),
                 Command = file,
-                Location = location
+                Location = location,
+                Enabled = true
             });
         }
     }

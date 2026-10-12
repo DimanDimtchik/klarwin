@@ -13,8 +13,6 @@ public partial class MainWindow : Window
     private readonly CleanupService _cleanup = new();
     private readonly SpeedService _speed = new();
     private readonly ShortcutOverlayService _overlay = new();
-    private readonly AutostartService _autostart = new();
-    private readonly AutostartCatalogService _autostartCatalog = new();
     private readonly SecureWipeService _wipe = new();
     private readonly RecoveryService _recovery = new();
     private readonly LicenseKeyService _keys = new();
@@ -31,8 +29,6 @@ public partial class MainWindow : Window
     private DateTime _lastHostsUtc = DateTime.MinValue;
     private DateTime _lastPingUtc = DateTime.MinValue;
     private CancellationTokenSource? _wipeCts;
-    private IReadOnlyList<AutostartEntry> _autostartItems = [];
-    private IReadOnlyList<AutostartCandidate> _autostartCandidates = [];
     private IReadOnlyList<RecoverableItem> _recoverItems = [];
     private IReadOnlyList<LicenseKeyEntry> _keyItems = [];
 
@@ -191,61 +187,12 @@ public partial class MainWindow : Window
 
     private void OnAutostartClick(object sender, RoutedEventArgs e)
     {
-        ShowAutostartList();
-    }
-
-    private void ShowAutostartList()
-    {
-        _mode = "autostart";
+        _mode = "";
         ResetPanelChrome();
         PanelTitle.Text = "Autostart";
-        PrimaryAction.Content = "Auswahl deaktivieren";
-        SecondaryAction.Content = "Programm hinzufügen";
-        SecondaryAction.Visibility = Visibility.Visible;
-        TertiaryAction.Content = "Task-Manager";
-        TertiaryAction.Visibility = Visibility.Visible;
-        DetailList.Visibility = Visibility.Visible;
-        _autostartItems = _autostart.ListEntries();
-        DetailList.Items.Clear();
-        foreach (var item in _autostartItems)
-        {
-            DetailList.Items.Add($"{item.Name}  ·  {item.Location}");
-        }
-
-        PanelBody.Text = _autostartItems.Count == 0
-            ? "Keine Autostart-Einträge gefunden. „Programm hinzufügen“ zeigt installierte Programme — ohne Ordner-Dialog."
-            : $"{_autostartItems.Count} Einträge. Markieren und deaktivieren, ein Programm aus der Liste hinzufügen, oder Task-Manager öffnen.";
-    }
-
-    private async Task ShowAutostartCandidateListAsync()
-    {
-        _mode = "autostart-add";
-        PanelTitle.Text = "Programm zum Autostart";
-        PrimaryAction.Content = "Zum Autostart hinzufügen";
-        PrimaryAction.Visibility = Visibility.Visible;
-        SecondaryAction.Content = "Zurück";
-        SecondaryAction.Visibility = Visibility.Visible;
-        TertiaryAction.Visibility = Visibility.Collapsed;
-        DetailList.Visibility = Visibility.Visible;
-        DetailList.MaxHeight = 240;
-        DetailList.Items.Clear();
-        PanelBody.Text = "Installierte Programme werden gesammelt (Startmenü, App Paths, Installer) …";
-        PrimaryAction.IsEnabled = false;
-
-        var current = _autostartItems.Count > 0 ? _autostartItems : _autostart.ListEntries();
-        _autostartItems = current;
-        _autostartCandidates = await Task.Run(() => _autostartCatalog.DiscoverCandidates(current));
-
-        DetailList.Items.Clear();
-        foreach (var item in _autostartCandidates)
-        {
-            DetailList.Items.Add($"{item.Name}  ·  {item.Source}");
-        }
-
-        PrimaryAction.IsEnabled = true;
-        PanelBody.Text = _autostartCandidates.Count == 0
-            ? "Keine weiteren Programme gefunden, die noch nicht im Autostart sind."
-            : $"{_autostartCandidates.Count} Programme. Markieren und „Zum Autostart hinzufügen“ — es wird eine Verknüpfung in Ihrem Autostart-Ordner angelegt.";
+        PanelBody.Text = "Verwaltung im Autostart-Fenster.";
+        var win = new AutostartWindow { Owner = this };
+        win.ShowDialog();
     }
 
     private void OnWipeClick(object sender, RoutedEventArgs e)
@@ -349,12 +296,6 @@ public partial class MainWindow : Window
             case "overlay":
                 ApplyOverlay(hide: true);
                 break;
-            case "autostart":
-                DisableSelectedAutostart();
-                break;
-            case "autostart-add":
-                AddSelectedAutostartCandidate();
-                break;
             case "wipe":
                 await RunWipe();
                 break;
@@ -382,12 +323,6 @@ public partial class MainWindow : Window
                 break;
             case "overlay":
                 ApplyOverlay(hide: false);
-                break;
-            case "autostart":
-                _ = ShowAutostartCandidateListAsync();
-                break;
-            case "autostart-add":
-                ShowAutostartList();
                 break;
             case "wipe":
                 _wipeCts?.Cancel();
@@ -462,51 +397,6 @@ public partial class MainWindow : Window
 
     private void OnTertiaryAction(object sender, RoutedEventArgs e)
     {
-        if (_mode == "autostart")
-        {
-            _autostart.OpenTaskManagerStartup();
-        }
-    }
-
-    private void AddSelectedAutostartCandidate()
-    {
-        if (DetailList.SelectedIndex < 0 || DetailList.SelectedIndex >= _autostartCandidates.Count)
-        {
-            PanelBody.Text = "Bitte ein Programm in der Liste markieren.";
-            return;
-        }
-
-        var candidate = _autostartCandidates[DetailList.SelectedIndex];
-        PanelBody.Text = _autostart.AddToAutostart(candidate);
-        ShowAutostartList();
-    }
-
-    private void DisableSelectedAutostart()
-    {
-        if (DetailList.SelectedIndex < 0 || DetailList.SelectedIndex >= _autostartItems.Count)
-        {
-            PanelBody.Text = "Bitte einen Eintrag in der Liste markieren.";
-            return;
-        }
-
-        var entry = _autostartItems[DetailList.SelectedIndex];
-        var confirm = MessageBox.Show(
-            this,
-            $"„{entry.Name}“ wirklich aus dem Autostart nehmen?",
-            "KlarWin",
-            MessageBoxButton.YesNo,
-            MessageBoxImage.Question);
-        if (confirm != MessageBoxResult.Yes) return;
-
-        try
-        {
-            PanelBody.Text = _autostart.Disable(entry);
-            OnAutostartClick(this, new RoutedEventArgs());
-        }
-        catch (Exception ex)
-        {
-            PanelBody.Text = $"Fehler: {ex.Message}. Bei System-Einträgen als Administrator starten.";
-        }
     }
 
     private async Task RunWipe()
