@@ -12,15 +12,25 @@
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
         <TextBlock x:Name="HeaderText" FontFamily="Bahnschrift" FontSize="22" Text="Autostart"/>
-        <TextBlock x:Name="HintText" Grid.Row="1" Margin="0,8,0,14" FontSize="14" Foreground="#64748B"
+        <TextBlock x:Name="HintText" Grid.Row="1" Margin="0,8,0,10" FontSize="14" Foreground="#64748B"
                    TextWrapping="Wrap"/>
 
-        <Border Grid.Row="2" BorderBrush="#E7E0D8" BorderThickness="1" Background="#FFFFFF" CornerRadius="8">
+        <DockPanel Grid.Row="2" Margin="0,0,0,10" LastChildFill="True">
+            <Button x:Name="BtnClearSearch" DockPanel.Dock="Right" Margin="8,0,0,0" Padding="12,6"
+                    Content="×" ToolTip="Suche leeren" Click="OnClearSearchClick"
+                    Style="{StaticResource GhostButton}" MinWidth="36"/>
+            <TextBox x:Name="SearchBox" Height="34" FontSize="14"
+                     VerticalContentAlignment="Center" Padding="8,0"
+                     TextChanged="OnSearchTextChanged"/>
+        </DockPanel>
+
+        <Border Grid.Row="3" BorderBrush="#E7E0D8" BorderThickness="1" Background="#FFFFFF" CornerRadius="8">
             <Grid>
                 <ListBox x:Name="EntryList" BorderThickness="0" Background="Transparent"
                          ScrollViewer.HorizontalScrollBarVisibility="Disabled"
@@ -53,7 +63,7 @@
             </Grid>
         </Border>
 
-        <WrapPanel Grid.Row="3" Margin="0,16,0,0" HorizontalAlignment="Left">
+        <WrapPanel Grid.Row="4" Margin="0,16,0,0" HorizontalAlignment="Left">
             <Button x:Name="BtnDisable" Style="{StaticResource ActionButton}" Margin="0,0,10,8"
                     Content="Auswahl deaktivieren" Click="OnDisableClick" Visibility="Collapsed"/>
             <Button x:Name="BtnEnable" Style="{StaticResource GhostButton}" Margin="0,0,10,8"

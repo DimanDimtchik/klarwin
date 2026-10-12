@@ -127,7 +127,7 @@ public sealed class AutostartService
 
         try
         {
-            CreateShortcut(linkPath, candidate.ExecutablePath, candidate.Name);
+            CreateShortcut(linkPath, candidate.ExecutablePath, candidate.Name, candidate.Arguments);
             TrySetStartupApproved(new AutostartEntry
             {
                 Name = Path.GetFileNameWithoutExtension(linkName),
@@ -168,7 +168,7 @@ public sealed class AutostartService
         return name.Length > 80 ? name[..80] : name;
     }
 
-    private static void CreateShortcut(string linkPath, string targetExe, string description)
+    private static void CreateShortcut(string linkPath, string targetExe, string description, string? arguments = null)
     {
         var shellType = Type.GetTypeFromProgID("WScript.Shell")
             ?? throw new InvalidOperationException("Verknüpfungen sind auf diesem System nicht verfügbar.");
@@ -177,6 +177,8 @@ public sealed class AutostartService
         link.TargetPath = targetExe;
         link.WorkingDirectory = Path.GetDirectoryName(targetExe) ?? "";
         link.Description = description;
+        if (!string.IsNullOrWhiteSpace(arguments))
+            link.Arguments = arguments;
         link.Save();
     }
 

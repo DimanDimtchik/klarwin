@@ -1,6 +1,6 @@
-{
-  "version": "1.3.61",
+﻿{
+  "version": "1.3.63",
   "url": "https://ganz-soft.de/klarwin/KlarWin-Setup.zip",
-  "notes": "Autostart: Haken = aktiv (wie Task-Manager); StartupApproved; Katalog inkl. Store-Apps (ChatGPT u. a.).",
+  "notes": "Autostart: Chrome/Edge-Profile einzeln (Name + E-Mail); Suche; Haken = aktiv.",
   "published": "2026-10-12"
 }

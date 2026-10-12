@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Runtime.CompilerServices;
 using System.Windows;
+using System.Windows.Data;
 using KlarWin.Services;
 
 namespace KlarWin;
@@ -51,7 +52,10 @@ public partial class AutostartWindow : Window
     private readonly AutostartCatalogService _catalog = new();
     private readonly ObservableCollection<AutostartRow> _entryRows = [];
     private readonly ObservableCollection<AutostartRow> _candidateRows = [];
+    private readonly ICollectionView _entryView;
+    private readonly ICollectionView _candidateView;
     private bool _pickerMode;
+    private string _statusHint = "";
 
     /// <summary>True when the user asked to open Startlayout after closing this window.</summary>
     public bool OpenStartLayoutRequested { get; private set; }
@@ -61,19 +65,74 @@ public partial class AutostartWindow : Window
         InitializeComponent();
         EntryList.ItemsSource = _entryRows;
         CandidateList.ItemsSource = _candidateRows;
-        Loaded += (_, _) => LoadEntries();
+        _entryView = CollectionViewSource.GetDefaultView(_entryRows);
+        _candidateView = CollectionViewSource.GetDefaultView(_candidateRows);
+        _entryView.Filter = FilterRow;
+        _candidateView.Filter = FilterRow;
+        Loaded += (_, _) =>
+        {
+            LoadEntries();
+            SearchBox.Focus();
+        };
+    }
+
+    private bool FilterRow(object obj)
+    {
+        if (obj is not AutostartRow row) return false;
+        var q = SearchBox.Text.Trim();
+        if (q.Length == 0) return true;
+        return row.Title.Contains(q, StringComparison.OrdinalIgnoreCase)
+               || row.Subtitle.Contains(q, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private void OnSearchTextChanged(object sender, System.Windows.Controls.TextChangedEventArgs e)
+    {
+        ApplyFilter();
+    }
+
+    private void OnClearSearchClick(object sender, RoutedEventArgs e)
+    {
+        SearchBox.Text = "";
+        SearchBox.Focus();
+    }
+
+    private void ApplyFilter()
+    {
+        _entryView.Refresh();
+        _candidateView.Refresh();
+        UpdateFilterHint();
+    }
+
+    private void UpdateFilterHint()
+    {
+        var q = SearchBox.Text.Trim();
+        if (q.Length == 0)
+        {
+            HintText.Text = _statusHint;
+            return;
+        }
+
+        var view = _pickerMode ? _candidateView : _entryView;
+        var visible = 0;
+        foreach (var _ in view)
+            visible++;
+
+        var total = _pickerMode ? _candidateRows.Count : _entryRows.Count;
+        HintText.Text = $"{visible} von {total} Treffer für „{q}“.\n{_statusHint}";
     }
 
     private void LoadEntries()
     {
         _pickerMode = false;
         ShowEntryChrome();
+        var keepSearch = SearchBox.Text;
         _entryRows.Clear();
         foreach (var entry in _autostart.ListEntries())
         {
+            var profileTitle = BrowserProfileCatalogService.TryFormatAutostartLabel(entry.Command);
             var row = new AutostartRow
             {
-                Title = entry.Name,
+                Title = string.IsNullOrWhiteSpace(profileTitle) ? entry.Name : profileTitle,
                 Subtitle = FormatEntrySubtitle(entry),
                 Entry = entry
             };
@@ -83,9 +142,11 @@ public partial class AutostartWindow : Window
         }
 
         var active = _entryRows.Count(r => r.Entry?.Enabled == true);
-        HintText.Text = _entryRows.Count == 0
+        _statusHint = _entryRows.Count == 0
             ? "Keine Autostart-Einträge. „Programm hinzufügen“ zeigt installierte Apps — inkl. Store-Apps."
-            : $"{_entryRows.Count} Einträge, {active} aktiv. Haken = startet mit Windows (wie Task-Manager).";
+            : $"{_entryRows.Count} Einträge, {active} aktiv. Haken = startet mit Windows. Suche oben filtert die Liste.";
+        SearchBox.Text = keepSearch;
+        ApplyFilter();
     }
 
     private static string FormatEntrySubtitle(AutostartEntry entry)
@@ -102,9 +163,9 @@ public partial class AutostartWindow : Window
         try
         {
             var msg = _autostart.SetEnabled(entry, row.IsChecked);
-            // Reload so Enabled/StartupApproved status stays accurate
             LoadEntries();
-            HintText.Text = msg + "\n" + HintText.Text;
+            _statusHint = msg + "\n" + _statusHint;
+            UpdateFilterHint();
         }
         catch (Exception ex)
         {
@@ -116,6 +177,10 @@ public partial class AutostartWindow : Window
 
     private static string FriendlyCommand(AutostartEntry entry)
     {
+        var profileLabel = BrowserProfileCatalogService.TryFormatAutostartLabel(entry.Command);
+        if (!string.IsNullOrWhiteSpace(profileLabel))
+            return profileLabel;
+
         if (entry.Location.Contains("Ordner", StringComparison.Ordinal))
         {
             var target = AutostartCatalogService.ResolveShortcutTarget(entry.Command) ?? entry.Command;
@@ -127,7 +192,6 @@ public partial class AutostartWindow : Window
             && !Path.GetFileName(exe).Equals("explorer.exe", StringComparison.OrdinalIgnoreCase))
             return Path.GetFileName(exe);
 
-        // Protocol / AppX (z. B. BlueMail über explorer.exe + App-ID)
         var cmd = entry.Command.Trim();
         if (cmd.Length > 64) cmd = cmd[..61] + "…";
         return cmd;
@@ -145,6 +209,7 @@ public partial class AutostartWindow : Window
         BtnBack.Visibility = Visibility.Collapsed;
         BtnConfirmAdd.Visibility = Visibility.Collapsed;
         HeaderText.Text = "Autostart";
+        SearchBox.ToolTip = "Autostart-Einträge filtern (Name oder Pfad)";
     }
 
     private void ShowPickerChrome()
@@ -159,6 +224,7 @@ public partial class AutostartWindow : Window
         BtnBack.Visibility = Visibility.Visible;
         BtnConfirmAdd.Visibility = Visibility.Visible;
         HeaderText.Text = "Programm zum Autostart";
+        SearchBox.ToolTip = "Installierte Programme filtern";
     }
 
     private void OnStartLayoutClick(object sender, RoutedEventArgs e)
@@ -172,7 +238,8 @@ public partial class AutostartWindow : Window
         _pickerMode = true;
         ShowPickerChrome();
         _candidateRows.Clear();
-        HintText.Text = "Installierte Programme werden gesammelt (Startmenü, Store, Registry) …";
+        _statusHint = "Installierte Programme werden gesammelt (Startmenü, Store, Registry) …";
+        UpdateFilterHint();
         BtnConfirmAdd.IsEnabled = false;
 
         var current = _autostart.ListEntries();
@@ -180,19 +247,23 @@ public partial class AutostartWindow : Window
         _candidateRows.Clear();
         foreach (var c in candidates)
         {
+            var detail = string.IsNullOrWhiteSpace(c.Arguments)
+                ? Path.GetFileName(c.ExecutablePath)
+                : $"{Path.GetFileName(c.ExecutablePath)} {c.Arguments}";
             _candidateRows.Add(new AutostartRow
             {
                 Title = c.Name,
-                Subtitle = $"{Path.GetFileName(c.ExecutablePath)} · {c.Source}",
+                Subtitle = $"{detail} · {c.Source}",
                 Candidate = c
             });
         }
 
         BtnConfirmAdd.IsEnabled = true;
-        HintText.Text = _candidateRows.Count == 0
+        _statusHint = _candidateRows.Count == 0
             ? "Keine weiteren Programme gefunden (bereits im Autostart sind ausgeblendet)."
-            : $"{_candidateRows.Count} Programme — anhaken und „Zum Autostart hinzufügen“. " +
-              "Schon aktive (z. B. Nextcloud, BlueMail) erscheinen hier nicht.";
+            : $"{_candidateRows.Count} Programme — Chrome/Edge-Profile einzeln wählbar. Suchen, anhaken, hinzufügen.";
+        ApplyFilter();
+        SearchBox.Focus();
     }
 
     private void OnBackClick(object sender, RoutedEventArgs e)
@@ -217,9 +288,9 @@ public partial class AutostartWindow : Window
         LoadEntries();
     }
 
-    private void OnDisableClick(object sender, RoutedEventArgs e) { /* replaced by checkbox toggle */ }
+    private void OnDisableClick(object sender, RoutedEventArgs e) { }
 
-    private void OnEnableClick(object sender, RoutedEventArgs e) { /* replaced by checkbox toggle */ }
+    private void OnEnableClick(object sender, RoutedEventArgs e) { }
 
     private void OnStartupFolderClick(object sender, RoutedEventArgs e)
     {

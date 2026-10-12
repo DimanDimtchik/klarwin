@@ -7,7 +7,14 @@ public sealed class AutostartCandidate
 {
     public string Name { get; init; } = "";
     public string ExecutablePath { get; init; } = "";
+    /// <summary>Optional process args (e.g. Chrome --profile-directory=…).</summary>
+    public string Arguments { get; init; } = "";
     public string Source { get; init; } = "";
+
+    public string IdentityKey =>
+        string.IsNullOrWhiteSpace(Arguments)
+            ? ExecutablePath
+            : $"{ExecutablePath}|{Arguments}";
 }
 
 public sealed class AutostartCatalogService
@@ -15,9 +22,9 @@ public sealed class AutostartCatalogService
     public IReadOnlyList<AutostartCandidate> DiscoverCandidates(IReadOnlyList<AutostartEntry> currentAutostart)
     {
         var already = CollectAlreadyAutostart(currentAutostart);
-        var byPath = new Dictionary<string, AutostartCandidate>(StringComparer.OrdinalIgnoreCase);
+        var byKey = new Dictionary<string, AutostartCandidate>(StringComparer.OrdinalIgnoreCase);
 
-        void TryAdd(string? name, string? exePath, string source)
+        void TryAdd(string? name, string? exePath, string source, string? arguments = null)
         {
             if (string.IsNullOrWhiteSpace(name) || string.IsNullOrWhiteSpace(exePath))
                 return;
@@ -44,39 +51,65 @@ public sealed class AutostartCatalogService
             if (name.Length == 0)
                 name = Path.GetFileNameWithoutExtension(path);
 
-            if (already.Paths.Contains(path) || already.Names.Contains(name))
+            arguments = (arguments ?? "").Trim();
+            var key = string.IsNullOrWhiteSpace(arguments) ? path : $"{path}|{arguments}";
+
+            if (already.Identities.Contains(key) || already.Names.Contains(name))
                 return;
 
             // Skip trivial stubs that only wrap explorer
             if (Path.GetFileName(path).Equals("explorer.exe", StringComparison.OrdinalIgnoreCase))
                 return;
 
-            if (byPath.TryGetValue(path, out var existing))
+            // Plain Chrome/Edge without profile is replaced by per-profile entries
+            if (string.IsNullOrWhiteSpace(arguments) && BrowserProfileCatalogService.IsChromiumBrowserExe(path))
+                return;
+
+            if (byKey.TryGetValue(key, out var existing))
             {
                 if (name.Length > existing.Name.Length)
-                    byPath[path] = new AutostartCandidate { Name = name, ExecutablePath = path, Source = source };
+                {
+                    byKey[key] = new AutostartCandidate
+                    {
+                        Name = name,
+                        ExecutablePath = path,
+                        Arguments = arguments,
+                        Source = source
+                    };
+                }
+
                 return;
             }
 
-            byPath[path] = new AutostartCandidate { Name = name, ExecutablePath = path, Source = source };
+            byKey[key] = new AutostartCandidate
+            {
+                Name = name,
+                ExecutablePath = path,
+                Arguments = arguments,
+                Source = source
+            };
         }
+
+        foreach (var profile in BrowserProfileCatalogService.ListProfiles())
+            TryAdd(profile.DisplayName, profile.ExecutablePath, $"{profile.BrowserName}-Profil", profile.Arguments);
 
         foreach (var app in InstalledAppsCatalogService.ListApps(1200))
             TryAdd(app.Name, app.ExePath, string.IsNullOrWhiteSpace(app.Source) ? "Installiert" : app.Source);
 
-        AddFromAppPaths(TryAdd);
-        AddFromWindowsApps(TryAdd);
-        AddFromUninstallRegistry(TryAdd);
+        void TryAddPlain(string? name, string? exePath, string source) => TryAdd(name, exePath, source);
+        AddFromAppPaths(TryAddPlain);
+        AddFromWindowsApps(TryAddPlain);
+        AddFromUninstallRegistry(TryAddPlain);
 
-        return byPath.Values
+        return byKey.Values
             .OrderBy(c => c.Name, StringComparer.CurrentCultureIgnoreCase)
             .ToList();
     }
 
-    private static (HashSet<string> Paths, HashSet<string> Names) CollectAlreadyAutostart(
+    private static (HashSet<string> Identities, HashSet<string> Names) CollectAlreadyAutostart(
         IReadOnlyList<AutostartEntry> entries)
     {
-        var paths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var identities = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var entry in entries)
@@ -86,30 +119,63 @@ public sealed class AutostartCatalogService
 
             if (entry.Location.Contains("Ordner", StringComparison.Ordinal))
             {
-                var target = ResolveShortcutTarget(entry.Command) ?? entry.Command;
-                TryAddPath(paths, target);
+                var link = entry.Command;
+                var target = ResolveShortcutTarget(link) ?? link;
+                var args = ResolveShortcutArguments(link) ?? "";
+                var profile = BrowserProfileCatalogService.ExtractProfileDirectory(args)
+                              ?? BrowserProfileCatalogService.ExtractProfileDirectory(target);
+                TryAddIdentity(identities, AutostartService.ExtractExecutablePath(target) ?? target, args, profile);
                 continue;
             }
 
             var exe = AutostartService.ExtractExecutablePath(entry.Command);
-            TryAddPath(paths, exe);
-            // Protocol / AppX launchers (BlueMail → explorer.exe + protocol): keep name match only
+            var profileDir = BrowserProfileCatalogService.ExtractProfileDirectory(entry.Command);
+            TryAddIdentity(identities, exe, entry.Command, profileDir);
         }
 
-        return (paths, names);
+        return (identities, names);
     }
 
-    private static void TryAddPath(HashSet<string> paths, string? path)
+    private static void TryAddIdentity(HashSet<string> identities, string? exe, string argsOrCommand, string? profileDir)
     {
-        if (string.IsNullOrWhiteSpace(path)) return;
+        if (string.IsNullOrWhiteSpace(exe)) return;
         try
         {
-            if (File.Exists(path))
-                paths.Add(Path.GetFullPath(path));
+            if (!File.Exists(exe)) return;
+            exe = Path.GetFullPath(exe);
         }
         catch
         {
-            // ignore
+            return;
+        }
+
+        if (!string.IsNullOrWhiteSpace(profileDir))
+        {
+            identities.Add($"{exe}|--profile-directory=\"{profileDir}\"");
+            identities.Add($"{exe}|--profile-directory={profileDir}");
+            return;
+        }
+
+        // Non-browser or browser without profile: path alone
+        if (!BrowserProfileCatalogService.IsChromiumBrowserExe(exe))
+            identities.Add(exe);
+    }
+
+    private static string? ResolveShortcutArguments(string linkPath)
+    {
+        if (!linkPath.EndsWith(".lnk", StringComparison.OrdinalIgnoreCase)) return null;
+        try
+        {
+            var shellType = Type.GetTypeFromProgID("WScript.Shell");
+            if (shellType is null) return null;
+            dynamic shell = Activator.CreateInstance(shellType)!;
+            dynamic link = shell.CreateShortcut(linkPath);
+            string args = link.Arguments ?? "";
+            return string.IsNullOrWhiteSpace(args) ? null : args;
+        }
+        catch
+        {
+            return null;
         }
     }
 
