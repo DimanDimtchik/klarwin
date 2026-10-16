@@ -4819,22 +4819,54 @@ public partial class MainWindow : Window
         if (confirm != MessageBoxResult.Yes) return;
 
         PrimaryAction.IsEnabled = false;
+        SoftwareInstallBatchResult? batch = null;
         try
         {
-            var result = await RunWithInstallProgressAsync(selected.Count, async progress =>
+            batch = await RunWithInstallProgressAsync(selected.Count, async progress =>
             {
                 return await _softwareUpdates.InstallSelectedAsync(selected, progress);
             });
-            PanelBody.Text = result;
+
+            MessageBox.Show(
+                this,
+                $"Ergebnis: {batch.Succeeded} erfolgreich, {batch.Failed} fehlgeschlagen.\n\n{batch.SummaryText}",
+                "KlarWin — Update-Ergebnis",
+                MessageBoxButton.OK,
+                batch.Failed > 0 ? MessageBoxImage.Warning : MessageBoxImage.Information);
+
+            PanelBody.Text = batch.SummaryText;
         }
         catch (Exception ex)
         {
             PanelBody.Text = UserFriendlyErrors.Translate(ex);
+            MessageBox.Show(this, PanelBody.Text, "KlarWin — Update", MessageBoxButton.OK, MessageBoxImage.Error);
         }
         finally
         {
             PrimaryAction.IsEnabled = true;
+            var attempted = batch?.AttemptedIds ?? [];
             await RefreshSoftwareUpdatesAsync(invalidateCache: true);
+
+            if (batch is not null)
+            {
+                var stillThere = _softwareUpdateItems
+                    .Where(i => attempted.Contains(i.Id, StringComparer.OrdinalIgnoreCase))
+                    .Select(i => i.Name)
+                    .Distinct(StringComparer.CurrentCultureIgnoreCase)
+                    .ToList();
+
+                var leftover = stillThere.Count == 0
+                    ? "Nach dem erneuten Prüfen sind die gewählten Updates nicht mehr in der Liste."
+                    : $"{stillThere.Count} der gewählten Updates stehen weiterhin in der Liste"
+                      + (batch.Failed > 0
+                          ? " — siehe Fehler oben (oft: Administratorrechte nötig)."
+                          : " — winget meldet sie noch (Neustart, andere Architektur oder verzögerte Katalog-Aktualisierung).");
+
+                PanelBody.Text =
+                    $"Installationslauf: {batch.Succeeded} ✓ · {batch.Failed} ✗\n" +
+                    leftover + "\n\n" +
+                    batch.SummaryText;
+            }
         }
     }
 

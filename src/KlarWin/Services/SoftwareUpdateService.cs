@@ -16,6 +16,16 @@ public sealed class SoftwareUpdateItem
     public object? NativeHandle { get; init; }
 }
 
+public sealed class SoftwareInstallBatchResult
+{
+    public IReadOnlyList<string> Lines { get; init; } = [];
+    public int Succeeded { get; init; }
+    public int Failed { get; init; }
+    public IReadOnlyList<string> AttemptedIds { get; init; } = [];
+
+    public string SummaryText => string.Join("\n", Lines.Where(n => !string.IsNullOrWhiteSpace(n)));
+}
+
 public sealed class SoftwareUpdateService
 {
     private static readonly TimeSpan WingetListCacheDuration = TimeSpan.FromMinutes(3);
@@ -77,18 +87,29 @@ public sealed class SoftwareUpdateService
         }
     }
 
-    public async Task<string> InstallSelectedAsync(
+    public async Task<SoftwareInstallBatchResult> InstallSelectedAsync(
         IReadOnlyList<SoftwareUpdateItem> items,
         IProgress<SoftwareInstallProgress>? progress = null,
         CancellationToken cancellationToken = default)
     {
-        if (items.Count == 0) return "Nichts ausgewählt.";
+        if (items.Count == 0)
+        {
+            return new SoftwareInstallBatchResult
+            {
+                Lines = ["Nichts ausgewählt."],
+                Succeeded = 0,
+                Failed = 0
+            };
+        }
 
         var notes = new List<string>();
         var apps = items.Where(i => i.Source == "winget").ToList();
         var drivers = items.Where(i => i.Source == "wu-driver").ToList();
+        var attemptedIds = items.Select(i => i.Id).ToList();
         var total = apps.Count + (drivers.Count > 0 ? 1 : 0);
         var step = 0;
+        var succeeded = 0;
+        var failed = 0;
 
         void ReportStep(string headline, string detail, bool indeterminate = true)
         {
@@ -119,14 +140,17 @@ public sealed class SoftwareUpdateService
                     IsIndeterminate = true
                 });
             });
-            notes.Add(await Task.Run(() => InstallWinget(app.Id, app.Name, detailProgress), cancellationToken));
+            var line = await Task.Run(() => InstallWinget(app.Id, app.Name, detailProgress), cancellationToken);
+            notes.Add(line);
+            if (line.StartsWith('✓')) succeeded++;
+            else failed++;
             step++;
             progress?.Report(new SoftwareInstallProgress
             {
                 Step = step,
                 Total = total,
-                Headline = notes[^1].StartsWith('✓') ? $"{app.Name} fertig" : $"{app.Name} — Ergebnis prüfen",
-                Detail = notes[^1],
+                Headline = line.StartsWith('✓') ? $"{app.Name} fertig" : $"{app.Name} — fehlgeschlagen",
+                Detail = line,
                 IsIndeterminate = false
             });
         }
@@ -137,20 +161,29 @@ public sealed class SoftwareUpdateService
             ReportStep(
                 $"Installiere {drivers.Count} Treiber-Update(s) …",
                 "Windows Update — bitte warten, kein Fenster schließen.");
-            notes.Add(await Task.Run(() => InstallDrivers(drivers), cancellationToken));
+            var line = await Task.Run(() => InstallDrivers(drivers), cancellationToken);
+            notes.Add(line);
+            if (line.StartsWith('✓')) succeeded++;
+            else failed++;
             step++;
             progress?.Report(new SoftwareInstallProgress
             {
                 Step = step,
                 Total = total,
                 Headline = "Treiber-Updates abgeschlossen",
-                Detail = notes[^1],
+                Detail = line,
                 IsIndeterminate = false
             });
         }
 
         InvalidateCache();
-        return string.Join("\n", notes.Where(n => !string.IsNullOrWhiteSpace(n)));
+        return new SoftwareInstallBatchResult
+        {
+            Lines = notes,
+            Succeeded = succeeded,
+            Failed = failed,
+            AttemptedIds = attemptedIds
+        };
     }
 
     public static bool IsWingetAvailable()
@@ -258,10 +291,15 @@ public sealed class SoftwareUpdateService
     {
         try
         {
+            // -e = exakte Id; ohne Admin scheitern viele Maschinen-Installationen
+            var args =
+                $"upgrade --id \"{id}\" -e --source winget " +
+                "--accept-package-agreements --accept-source-agreements " +
+                "--disable-interactivity --silent --force";
             using var p = Process.Start(new ProcessStartInfo
             {
                 FileName = "winget",
-                Arguments = $"upgrade --id \"{id}\" --accept-package-agreements --accept-source-agreements --disable-interactivity --silent",
+                Arguments = args,
                 UseShellExecute = false,
                 CreateNoWindow = true,
                 RedirectStandardOutput = true,
@@ -274,31 +312,67 @@ public sealed class SoftwareUpdateService
                 return $"✗ {displayName}: winget konnte nicht gestartet werden.";
             }
 
+            var log = new StringBuilder();
             var lastLine = $"{displayName}: wird installiert …";
-            p.OutputDataReceived += (_, e) =>
+            void OnLine(string? data)
             {
-                if (string.IsNullOrWhiteSpace(e.Data)) return;
-                lastLine = e.Data.Trim();
+                if (string.IsNullOrWhiteSpace(data)) return;
+                lastLine = data.Trim();
+                log.AppendLine(lastLine);
                 progress?.Report($"{displayName}: {lastLine}");
-            };
-            p.ErrorDataReceived += (_, e) =>
-            {
-                if (string.IsNullOrWhiteSpace(e.Data)) return;
-                lastLine = e.Data.Trim();
-                progress?.Report($"{displayName}: {lastLine}");
-            };
+            }
+
+            p.OutputDataReceived += (_, e) => OnLine(e.Data);
+            p.ErrorDataReceived += (_, e) => OnLine(e.Data);
             p.BeginOutputReadLine();
             p.BeginErrorReadLine();
-            p.WaitForExit(600_000);
+            if (!p.WaitForExit(600_000))
+            {
+                try { p.Kill(entireProcessTree: true); } catch { /* ignore */ }
+                return $"✗ {displayName}: Zeitüberschreitung (winget > 10 Min).";
+            }
 
-            return p.ExitCode == 0
-                ? $"✓ {displayName} aktualisiert."
-                : $"✗ {displayName}: Update fehlgeschlagen (Code {p.ExitCode}). {lastLine}";
+            if (p.ExitCode == 0)
+            {
+                return $"✓ {displayName} aktualisiert.";
+            }
+
+            var hint = WingetExitHint(p.ExitCode, log.ToString(), lastLine);
+            return $"✗ {displayName}: {hint}";
         }
         catch (Exception ex)
         {
             return $"✗ {displayName}: {UserFriendlyErrors.Translate(ex)}";
         }
+    }
+
+    private static string WingetExitHint(int exitCode, string log, string lastLine)
+    {
+        var blob = (log + "\n" + lastLine).ToLowerInvariant();
+        if (blob.Contains("requires elevation") || blob.Contains("administrator") || blob.Contains("access is denied")
+            || blob.Contains("zugriff verweigert") || blob.Contains("erhöhte rechte"))
+        {
+            return "Benötigt Administratorrechte. KlarWin als Administrator starten und erneut versuchen.";
+        }
+
+        if (blob.Contains("no newer package versions") || blob.Contains("keine neueren")
+            || blob.Contains("no available upgrade") || exitCode == -1978335189)
+        {
+            return "winget meldet kein Upgrade (vielleicht schon aktuell oder andere Architektur).";
+        }
+
+        if (blob.Contains("installer hash") || blob.Contains("hash mismatch"))
+        {
+            return "Installer-Hash stimmt nicht (Paketquelle). Später erneut versuchen.";
+        }
+
+        if (exitCode == -1978335212)
+        {
+            return "Kein passender Installer für dieses System (winget).";
+        }
+
+        var shortLast = lastLine.Length > 120 ? lastLine[..120] + "…" : lastLine;
+        return $"Update fehlgeschlagen (winget-Code {exitCode}). {shortLast}";
     }
 
     private static IReadOnlyList<SoftwareUpdateItem> ListDriverUpdates()
