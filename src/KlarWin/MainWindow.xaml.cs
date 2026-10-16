@@ -705,9 +705,13 @@ public partial class MainWindow : Window
                 FontSize = 13,
                 Tag = externalAction
             };
-            btn.Click += (_, _) =>
+            btn.Click += async (_, _) =>
             {
-                if (!externalAction.TryOpen())
+                if (externalAction.ProbeWindowsUpdateFirst)
+                    PanelBody.Text = "Kurz Windows Update prüfen …";
+
+                var opened = await Task.Run(() => externalAction.TryOpen());
+                if (!opened)
                 {
                     MessageBox.Show(
                         this,
@@ -715,7 +719,12 @@ public partial class MainWindow : Window
                         "KlarWin",
                         MessageBoxButton.OK,
                         MessageBoxImage.Warning);
+                    return;
                 }
+
+                PanelBody.Text = externalAction.ProbeWindowsUpdateFirst
+                    ? "Ziel geöffnet (Windows Update nur, wenn dort ein passendes Update lag — sonst die App-Update-Seite)."
+                    : $"„{externalAction.ButtonLabel}“ geöffnet.";
             };
             linkRow.Children.Add(btn);
             stack.Children.Add(linkRow);
