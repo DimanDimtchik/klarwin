@@ -4835,7 +4835,7 @@ public partial class MainWindow : Window
 
             MessageBox.Show(
                 this,
-                $"Ergebnis: {batch.Succeeded} erfolgreich, {batch.Failed} fehlgeschlagen.\n\n{batch.SummaryText}",
+                $"{batch.ResultHeadline}\n\n{batch.SummaryText}",
                 "KlarWin — Update-Ergebnis",
                 MessageBoxButton.OK,
                 batch.Failed > 0 ? MessageBoxImage.Warning : MessageBoxImage.Information);
@@ -4873,8 +4873,9 @@ public partial class MainWindow : Window
                           ? " — siehe Fehler oben (oft: Administratorrechte nötig)."
                           : " — winget meldet sie noch (Neustart, andere Architektur oder verzögerte Katalog-Aktualisierung).");
 
+                var skipPart = batch.Skipped > 0 ? $" · {batch.Skipped} ○" : "";
                 PanelBody.Text =
-                    $"Installationslauf: {batch.Succeeded} ✓ · {batch.Failed} ✗\n" +
+                    $"Installationslauf: {batch.Succeeded} ✓{skipPart} · {batch.Failed} ✗\n" +
                     leftover + "\n\n" +
                     batch.SummaryText;
             }
@@ -4964,7 +4965,7 @@ public partial class MainWindow : Window
 
                 MessageBox.Show(
                     this,
-                    $"Ergebnis: {batch.Succeeded} erfolgreich, {batch.Failed} fehlgeschlagen.\n\n{batch.SummaryText}",
+                    $"{batch.ResultHeadline}\n\n{batch.SummaryText}",
                     "KlarWin — Update-Ergebnis",
                     MessageBoxButton.OK,
                     batch.Failed > 0 ? MessageBoxImage.Warning : MessageBoxImage.Information);
