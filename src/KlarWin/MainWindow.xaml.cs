@@ -3013,7 +3013,13 @@ public partial class MainWindow : Window
         SecondaryAction.Visibility = Visibility.Visible;
         TertiaryAction.Content = "Alles auswählen";
         TertiaryAction.Visibility = Visibility.Visible;
-        PanelBody.Text = "Updates per Checkbox wählen, dann „Auswahl installieren“ — winget bzw. Windows Update startet für die markierten Einträge.";
+        TertiaryAction.IsEnabled = false;
+        QuaternaryAction.Content = "Alles installieren";
+        QuaternaryAction.Visibility = Visibility.Visible;
+        QuaternaryAction.IsEnabled = false;
+        PanelBody.Text =
+            "Updates per Checkbox wählen — oder „Alles auswählen“ / Haken „Alle Updates“. " +
+            "„Alles installieren“ markiert alles und startet die Installation.";
         _ = RefreshSoftwareUpdatesAsync();
     });
 
@@ -3397,6 +3403,12 @@ public partial class MainWindow : Window
             }
 
             ShowStartLayoutProfileMenu();
+            return;
+        }
+
+        if (_mode == "software-updates")
+        {
+            _ = InstallAllSoftwareUpdatesAsync();
         }
     }
 
@@ -3431,10 +3443,7 @@ public partial class MainWindow : Window
         }
         else if (_mode == "software-updates")
         {
-            foreach (var cb in _itemChecks.Values)
-            {
-                cb.IsChecked = true;
-            }
+            ToggleSelectAllSoftwareUpdates();
         }
         else if (_mode == "keys")
         {
@@ -4625,13 +4634,19 @@ public partial class MainWindow : Window
 
             var appCount = _softwareUpdateItems.Count(i => i.Kind == "Programm");
             var driverCount = _softwareUpdateItems.Count(i => i.Kind == "Treiber");
-            PanelBody.Text = _softwareUpdateItems.Count == 0
+            var hasItems = _softwareUpdateItems.Count > 0;
+            TertiaryAction.IsEnabled = hasItems;
+            QuaternaryAction.IsEnabled = hasItems;
+            UpdateSoftwareUpdatesSelectAllButton();
+            PanelBody.Text = !hasItems
                 ? "Keine Updates gefunden. KlarWin selbst aktualisieren Sie unter Einstellungen → KlarWin Update."
-                : $"{appCount} Programm(e), {driverCount} Treiber — auswählen und „Auswahl installieren“. KlarWin-Update: Zahnrad → KlarWin Update.";
+                : $"{appCount} Programm(e), {driverCount} Treiber — einzeln anhaken, „Alles auswählen“, oder „Alles installieren“. KlarWin-Update: Zahnrad → KlarWin Update.";
         }
         catch (Exception ex)
         {
             PanelBody.Text = UserFriendlyErrors.Translate(ex);
+            TertiaryAction.IsEnabled = false;
+            QuaternaryAction.IsEnabled = false;
         }
         finally
         {
@@ -4642,13 +4657,147 @@ public partial class MainWindow : Window
 
     private void ShowSoftwareUpdateCheckboxes(IReadOnlyList<SoftwareUpdateItem> items)
     {
-        ShowItemCheckboxes(items.Select(item =>
-            (item.Id + "|" + item.Kind,
-            $"{item.Kind}: {item.Name}  ({item.CurrentVersion} → {item.AvailableVersion})",
-            item.Source == "winget" ? "winget" : "Windows Update",
-            false,
-            (object)item,
-            (ImageSource?)null)));
+        OptionsPanel.Visibility = Visibility.Visible;
+        OptionsPanel.Children.Clear();
+        _itemChecks.Clear();
+
+        if (items.Count > 0)
+        {
+            var master = new CheckBox
+            {
+                IsChecked = false,
+                FontSize = 14,
+                FontWeight = FontWeights.SemiBold,
+                Tag = "__select_all__"
+            };
+            master.Checked += (_, _) => SetAllSoftwareUpdateChecks(true, syncMaster: false);
+            master.Unchecked += (_, _) =>
+            {
+                // Only clear when user unticks master — not when Sync clears it after partial selection
+                if (_suppressSoftwareUpdateMasterSync) return;
+                SetAllSoftwareUpdateChecks(false, syncMaster: false);
+            };
+            _itemChecks["__select_all__"] = master;
+            OptionsPanel.Children.Add(BuildOptionRow(
+                "Alle Updates",
+                "Alle Programme und Treiber in der Liste auf einmal markieren oder abwählen.",
+                null,
+                master));
+        }
+
+        foreach (var item in items)
+        {
+            var id = item.Id + "|" + item.Kind;
+            var cb = new CheckBox
+            {
+                IsChecked = false,
+                Tag = item,
+                FontSize = 14
+            };
+            cb.Checked += (_, _) => SyncSoftwareUpdateMasterCheckbox();
+            cb.Unchecked += (_, _) => SyncSoftwareUpdateMasterCheckbox();
+            _itemChecks[id] = cb;
+            OptionsPanel.Children.Add(BuildOptionRow(
+                $"{item.Kind}: {item.Name}  ({item.CurrentVersion} → {item.AvailableVersion})",
+                item.Source == "winget" ? "winget" : "Windows Update",
+                null,
+                cb));
+        }
+
+        UpdateSoftwareUpdatesSelectAllButton();
+    }
+
+    private bool _suppressSoftwareUpdateMasterSync;
+
+    private IEnumerable<CheckBox> SoftwareUpdateItemCheckBoxes() =>
+        _itemChecks
+            .Where(p => p.Key is not "__select_all__")
+            .Select(p => p.Value);
+
+    private void SetAllSoftwareUpdateChecks(bool selected, bool syncMaster)
+    {
+        _suppressSoftwareUpdateMasterSync = true;
+        try
+        {
+            foreach (var cb in SoftwareUpdateItemCheckBoxes())
+            {
+                cb.IsChecked = selected;
+            }
+
+            if (syncMaster && _itemChecks.TryGetValue("__select_all__", out var master))
+            {
+                master.IsChecked = selected;
+            }
+        }
+        finally
+        {
+            _suppressSoftwareUpdateMasterSync = false;
+        }
+
+        UpdateSoftwareUpdatesSelectAllButton();
+        var n = SoftwareUpdateItemCheckBoxes().Count(c => c.IsChecked == true);
+        PanelBody.Text = selected
+            ? $"{n} Update(s) markiert. „Auswahl installieren“ oder „Alles installieren“ starten."
+            : "Auswahl aufgehoben. Einzelne Updates anhaken oder erneut „Alles auswählen“.";
+    }
+
+    private void SyncSoftwareUpdateMasterCheckbox()
+    {
+        if (_suppressSoftwareUpdateMasterSync) return;
+        if (!_itemChecks.TryGetValue("__select_all__", out var master)) return;
+
+        var boxes = SoftwareUpdateItemCheckBoxes().ToList();
+        if (boxes.Count == 0) return;
+
+        var allOn = boxes.All(c => c.IsChecked == true);
+        var allOff = boxes.All(c => c.IsChecked != true);
+        _suppressSoftwareUpdateMasterSync = true;
+        try
+        {
+            if (allOn) master.IsChecked = true;
+            else if (allOff) master.IsChecked = false;
+            else master.IsChecked = null; // indeterminate
+        }
+        finally
+        {
+            _suppressSoftwareUpdateMasterSync = false;
+        }
+
+        UpdateSoftwareUpdatesSelectAllButton();
+    }
+
+    private void UpdateSoftwareUpdatesSelectAllButton()
+    {
+        if (_mode != "software-updates") return;
+        var boxes = SoftwareUpdateItemCheckBoxes().ToList();
+        var allOn = boxes.Count > 0 && boxes.All(c => c.IsChecked == true);
+        TertiaryAction.Content = allOn ? "Auswahl aufheben" : "Alles auswählen";
+    }
+
+    private void ToggleSelectAllSoftwareUpdates()
+    {
+        var boxes = SoftwareUpdateItemCheckBoxes().ToList();
+        if (boxes.Count == 0)
+        {
+            PanelBody.Text = "Noch keine Updates geladen — bitte warten oder „Liste aktualisieren“.";
+            return;
+        }
+
+        var allOn = boxes.All(c => c.IsChecked == true);
+        SetAllSoftwareUpdateChecks(!allOn, syncMaster: true);
+    }
+
+    private async Task InstallAllSoftwareUpdatesAsync()
+    {
+        var boxes = SoftwareUpdateItemCheckBoxes().ToList();
+        if (boxes.Count == 0)
+        {
+            PanelBody.Text = "Keine Updates zum Installieren. Liste aktualisieren oder später erneut prüfen.";
+            return;
+        }
+
+        SetAllSoftwareUpdateChecks(true, syncMaster: true);
+        await InstallSoftwareUpdatesAsync();
     }
 
     private async Task InstallSoftwareUpdatesAsync()
@@ -4656,7 +4805,7 @@ public partial class MainWindow : Window
         var selected = CheckedItemTags<SoftwareUpdateItem>().ToList();
         if (selected.Count == 0)
         {
-            PanelBody.Text = "Bitte mindestens ein Update auswählen (oder „Alles auswählen“).";
+            PanelBody.Text = "Bitte mindestens ein Update auswählen (Haken „Alle Updates“, „Alles auswählen“ oder einzeln).";
             return;
         }
 
