@@ -26,8 +26,19 @@ public sealed class SoftwareInstallBatchResult
     public int Succeeded { get; init; }
     public int Failed { get; init; }
     public IReadOnlyList<string> AttemptedIds { get; init; } = [];
+    /// <summary>Packages that failed specifically because elevation was required.</summary>
+    public IReadOnlyList<SoftwareUpdateItem> AdminBlockedItems { get; init; } = [];
+
+    public bool NeedsAdmin => AdminBlockedItems.Count > 0;
 
     public string SummaryText => string.Join("\n", Lines.Where(n => !string.IsNullOrWhiteSpace(n)));
+
+    public static bool IsAdminRequiredMessage(string line) =>
+        line.Contains("Benötigt Administratorrechte", StringComparison.OrdinalIgnoreCase)
+        || line.Contains("requires elevation", StringComparison.OrdinalIgnoreCase)
+        || line.Contains("Administratorrechte nötig", StringComparison.OrdinalIgnoreCase)
+        || line.Contains("als Administrator starten", StringComparison.OrdinalIgnoreCase)
+        || line.Contains("als Administrator ausführen", StringComparison.OrdinalIgnoreCase);
 }
 
 public sealed class SoftwareUpdateService
@@ -110,6 +121,7 @@ public sealed class SoftwareUpdateService
         var apps = items.Where(i => i.Source == "winget").ToList();
         var drivers = items.Where(i => i.Source == "wu-driver").ToList();
         var attemptedIds = items.Select(i => i.Id).ToList();
+        var adminBlocked = new List<SoftwareUpdateItem>();
         var total = apps.Count + (drivers.Count > 0 ? 1 : 0);
         var step = 0;
         var succeeded = 0;
@@ -148,8 +160,17 @@ public sealed class SoftwareUpdateService
                 () => InstallWinget(app.Id, app.Name, app.PackageSource, detailProgress),
                 cancellationToken);
             notes.Add(line);
-            if (line.StartsWith('✓')) succeeded++;
-            else failed++;
+            if (line.StartsWith('✓'))
+            {
+                succeeded++;
+            }
+            else
+            {
+                failed++;
+                if (SoftwareInstallBatchResult.IsAdminRequiredMessage(line))
+                    adminBlocked.Add(app);
+            }
+
             step++;
             progress?.Report(new SoftwareInstallProgress
             {
@@ -169,8 +190,17 @@ public sealed class SoftwareUpdateService
                 "Windows Update — bitte warten, kein Fenster schließen.");
             var line = await Task.Run(() => InstallDrivers(drivers), cancellationToken);
             notes.Add(line);
-            if (line.StartsWith('✓')) succeeded++;
-            else failed++;
+            if (line.StartsWith('✓'))
+            {
+                succeeded++;
+            }
+            else
+            {
+                failed++;
+                if (SoftwareInstallBatchResult.IsAdminRequiredMessage(line))
+                    adminBlocked.AddRange(drivers);
+            }
+
             step++;
             progress?.Report(new SoftwareInstallProgress
             {
@@ -188,7 +218,8 @@ public sealed class SoftwareUpdateService
             Lines = notes,
             Succeeded = succeeded,
             Failed = failed,
-            AttemptedIds = attemptedIds
+            AttemptedIds = attemptedIds,
+            AdminBlockedItems = adminBlocked
         };
     }
 
@@ -610,9 +641,10 @@ public sealed class SoftwareUpdateService
     {
         var blob = (log + "\n" + lastLine).ToLowerInvariant();
         if (blob.Contains("requires elevation") || blob.Contains("administrator") || blob.Contains("access is denied")
-            || blob.Contains("zugriff verweigert") || blob.Contains("erhöhte rechte"))
+            || blob.Contains("zugriff verweigert") || blob.Contains("erhöhte rechte")
+            || exitCode == -1978335184) // APPINSTALLER_CLI_ERROR_REQUIRE_ADMIN
         {
-            return "Benötigt Administratorrechte. KlarWin als Administrator starten und erneut versuchen.";
+            return "Benötigt Administratorrechte.";
         }
 
         if (blob.Contains("no newer package versions") || blob.Contains("keine neueren")

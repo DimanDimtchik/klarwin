@@ -128,6 +128,7 @@ public partial class MainWindow : Window
             _ = RefreshLiveAsync();
             _timer.Start();
             _ = QuietUpdateCheckAsync();
+            _ = TryResumePendingSoftwareUpdatesAsync();
         };
         SizeChanged += (_, _) => UpdateTileGridColumns();
         Closed += (_, _) =>
@@ -490,8 +491,10 @@ public partial class MainWindow : Window
             return;
         }
 
-        var answer = MessageBox.Show(this, message, "KlarWin", MessageBoxButton.YesNo, MessageBoxImage.Question);
-        if (answer == MessageBoxResult.Yes)
+        if (AdminNeededDialog.ShowForOwner(
+                this,
+                message,
+                "Ohne Adminrechte sind manche Systemänderungen blockiert."))
         {
             RequestAdminRelaunch();
         }
@@ -4838,6 +4841,11 @@ public partial class MainWindow : Window
                 batch.Failed > 0 ? MessageBoxImage.Warning : MessageBoxImage.Information);
 
             PanelBody.Text = batch.SummaryText;
+
+            if (batch.NeedsAdmin && !ShortcutOverlayService.IsAdministrator())
+            {
+                OfferAdminResumeForUpdates(batch);
+            }
         }
         catch (Exception ex)
         {
@@ -4870,6 +4878,112 @@ public partial class MainWindow : Window
                     leftover + "\n\n" +
                     batch.SummaryText;
             }
+        }
+    }
+
+    private void OfferAdminResumeForUpdates(SoftwareInstallBatchResult batch)
+    {
+        var blocked = batch.AdminBlockedItems;
+        if (blocked.Count == 0) return;
+
+        var names = string.Join("\n", blocked
+            .Select(i => "• " + i.Name)
+            .Distinct(StringComparer.CurrentCultureIgnoreCase)
+            .Take(12));
+        if (blocked.Count > 12)
+            names += $"\n… und {blocked.Count - 12} weitere";
+
+        var otherFails = batch.Failed - blocked.Count;
+        var message =
+            $"{blocked.Count} Update(s) scheiterten an fehlenden Administratorrechten."
+            + (otherFails > 0 ? $" ({otherFails} weitere Fehler ohne Admin-Bezug.)" : "")
+            + "\n\nAls Admin fortfahren startet KlarWin neu (UAC) und setzt genau diese Updates fort.";
+
+        if (!AdminNeededDialog.ShowForOwner(this, message, names))
+            return;
+
+        PendingSoftwareUpdateResume.Save(blocked);
+        if (ShortcutOverlayService.IsAdministrator())
+            return;
+
+        switch (Elevation.TryRelaunchAsAdministrator())
+        {
+            case ElevationAttempt.Cancelled:
+                PendingSoftwareUpdateResume.Clear();
+                PanelBody.Text =
+                    "Administrator-Anfrage abgebrochen. Die Updates können später erneut installiert werden "
+                    + "(oder oben rechts „Adminrechte freischalten“).";
+                break;
+            case ElevationAttempt.Failed:
+                PendingSoftwareUpdateResume.Clear();
+                MessageBox.Show(
+                    this,
+                    "KlarWin konnte nicht mit Administratorrechten neu gestartet werden.\n\n"
+                    + "Alternativ: Rechtsklick auf KlarWin → Als Administrator ausführen, "
+                    + "dann die fehlgeschlagenen Updates erneut wählen.",
+                    "KlarWin",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
+                break;
+        }
+    }
+
+    private async Task TryResumePendingSoftwareUpdatesAsync()
+    {
+        try
+        {
+            if (!ShortcutOverlayService.IsAdministrator())
+                return;
+
+            var pending = PendingSoftwareUpdateResume.TryTake();
+            if (pending is null || pending.Count == 0)
+                return;
+
+            // Open the updates panel so progress/result UI is visible
+            OnUpdateClick(this, new RoutedEventArgs());
+
+            var names = string.Join(", ", pending.Select(p => p.Name).Take(6));
+            if (pending.Count > 6) names += " …";
+
+            var confirm = MessageBox.Show(
+                this,
+                $"KlarWin läuft jetzt als Administrator.\n\n"
+                + $"{pending.Count} offene(s) Update(s) fortsetzen?\n\n{names}",
+                "KlarWin — Updates fortsetzen",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Question);
+            if (confirm != MessageBoxResult.Yes)
+                return;
+
+            PrimaryAction.IsEnabled = false;
+            SoftwareInstallBatchResult? batch = null;
+            try
+            {
+                batch = await RunWithInstallProgressAsync(pending.Count, async progress =>
+                    await _softwareUpdates.InstallSelectedAsync(pending, progress));
+
+                MessageBox.Show(
+                    this,
+                    $"Ergebnis: {batch.Succeeded} erfolgreich, {batch.Failed} fehlgeschlagen.\n\n{batch.SummaryText}",
+                    "KlarWin — Update-Ergebnis",
+                    MessageBoxButton.OK,
+                    batch.Failed > 0 ? MessageBoxImage.Warning : MessageBoxImage.Information);
+                PanelBody.Text = batch.SummaryText;
+            }
+            catch (Exception ex)
+            {
+                PanelBody.Text = UserFriendlyErrors.Translate(ex);
+                MessageBox.Show(this, PanelBody.Text, "KlarWin — Update", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+            finally
+            {
+                PrimaryAction.IsEnabled = true;
+                await RefreshSoftwareUpdatesAsync(invalidateCache: true);
+            }
+        }
+        catch (Exception ex)
+        {
+            DiagnosticLogService.Error("Fortsetzung ausstehender Software-Updates", ex);
         }
     }
 
