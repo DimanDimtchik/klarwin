@@ -77,9 +77,10 @@ public sealed class SoftwareUpdateExternalAction
         string id,
         string? hint = null)
     {
+        // Qualify System.Uri — property "Uri" on this type would otherwise shadow it.
         var uri = LooksLikeMsStoreProductId(id)
-            ? $"ms-windows-store://pdp/?ProductId={Uri.EscapeDataString(id)}"
-            : $"ms-windows-store://search/?query={Uri.EscapeDataString(string.IsNullOrWhiteSpace(name) ? id : name)}";
+            ? $"ms-windows-store://pdp/?ProductId={System.Uri.EscapeDataString(id)}"
+            : $"ms-windows-store://search/?query={System.Uri.EscapeDataString(string.IsNullOrWhiteSpace(name) ? id : name)}";
 
         return new SoftwareUpdateExternalAction
         {
