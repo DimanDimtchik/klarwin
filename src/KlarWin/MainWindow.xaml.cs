@@ -4666,6 +4666,7 @@ public partial class MainWindow : Window
             var master = new CheckBox
             {
                 IsChecked = false,
+                IsThreeState = true,
                 FontSize = 14,
                 FontWeight = FontWeights.SemiBold,
                 Tag = "__select_all__"
