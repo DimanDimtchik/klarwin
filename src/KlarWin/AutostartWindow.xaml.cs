@@ -5,6 +5,7 @@ using System.IO;
 using System.Runtime.CompilerServices;
 using System.Windows;
 using System.Windows.Data;
+using Microsoft.Win32;
 using KlarWin.Services;
 
 namespace KlarWin;
@@ -143,7 +144,7 @@ public partial class AutostartWindow : Window
 
         var active = _entryRows.Count(r => r.Entry?.Enabled == true);
         _statusHint = _entryRows.Count == 0
-            ? "Keine Autostart-Einträge. „Programm hinzufügen“ zeigt installierte Apps — inkl. Store-Apps."
+            ? "Keine Autostart-Einträge. „Programm hinzufügen“ zeigt installierte Apps — inkl. Store und LocalAppData\\Programs."
             : $"{_entryRows.Count} Einträge, {active} aktiv. Haken = startet mit Windows. Suche oben filtert die Liste.";
         SearchBox.Text = keepSearch;
         ApplyFilter();
@@ -207,6 +208,7 @@ public partial class AutostartWindow : Window
         BtnStartupFolder.Visibility = Visibility.Visible;
         BtnStartLayout.Visibility = Visibility.Visible;
         BtnBack.Visibility = Visibility.Collapsed;
+        BtnBrowseExe.Visibility = Visibility.Collapsed;
         BtnConfirmAdd.Visibility = Visibility.Collapsed;
         HeaderText.Text = "Autostart";
         SearchBox.ToolTip = "Autostart-Einträge filtern (Name oder Pfad)";
@@ -222,6 +224,7 @@ public partial class AutostartWindow : Window
         BtnStartupFolder.Visibility = Visibility.Collapsed;
         BtnStartLayout.Visibility = Visibility.Collapsed;
         BtnBack.Visibility = Visibility.Visible;
+        BtnBrowseExe.Visibility = Visibility.Visible;
         BtnConfirmAdd.Visibility = Visibility.Visible;
         HeaderText.Text = "Programm zum Autostart";
         SearchBox.ToolTip = "Installierte Programme filtern";
@@ -238,32 +241,108 @@ public partial class AutostartWindow : Window
         _pickerMode = true;
         ShowPickerChrome();
         _candidateRows.Clear();
-        _statusHint = "Installierte Programme werden gesammelt (Startmenü, Store, Registry) …";
+        _statusHint = "Installierte Programme werden gesammelt (Startmenü, Desktop, Angeheftet, LocalAppData\\Programs, Store, Registry) …";
         UpdateFilterHint();
         BtnConfirmAdd.IsEnabled = false;
+        BtnBrowseExe.IsEnabled = false;
 
         var current = _autostart.ListEntries();
         var candidates = await Task.Run(() => _catalog.DiscoverCandidates(current));
         _candidateRows.Clear();
         foreach (var c in candidates)
-        {
-            var detail = string.IsNullOrWhiteSpace(c.Arguments)
-                ? Path.GetFileName(c.ExecutablePath)
-                : $"{Path.GetFileName(c.ExecutablePath)} {c.Arguments}";
-            _candidateRows.Add(new AutostartRow
-            {
-                Title = c.Name,
-                Subtitle = $"{detail} · {c.Source}",
-                Candidate = c
-            });
-        }
+            _candidateRows.Add(MakeCandidateRow(c));
 
         BtnConfirmAdd.IsEnabled = true;
+        BtnBrowseExe.IsEnabled = true;
         _statusHint = _candidateRows.Count == 0
-            ? "Keine weiteren Programme gefunden (bereits im Autostart sind ausgeblendet)."
-            : $"{_candidateRows.Count} Programme — Chrome/Edge-Profile einzeln wählbar. Suchen, anhaken, hinzufügen.";
+            ? "Keine weiteren Programme gefunden. „Andere App wählen …“ öffnet jede .exe (auch portable)."
+            : $"{_candidateRows.Count} Programme — Chrome/Edge-Profile einzeln wählbar. Fehlt etwas: „Andere App wählen …“.";
         ApplyFilter();
         SearchBox.Focus();
+    }
+
+    private static AutostartRow MakeCandidateRow(AutostartCandidate c)
+    {
+        var detail = string.IsNullOrWhiteSpace(c.Arguments)
+            ? Path.GetFileName(c.ExecutablePath)
+            : $"{Path.GetFileName(c.ExecutablePath)} {c.Arguments}";
+        return new AutostartRow
+        {
+            Title = c.Name,
+            Subtitle = $"{detail} · {c.Source}",
+            Candidate = c
+        };
+    }
+
+    private void OnBrowseExeClick(object sender, RoutedEventArgs e)
+    {
+        var dialog = new OpenFileDialog
+        {
+            Title = "Programm für Autostart wählen",
+            Filter = "Programme (*.exe)|*.exe|Alle Dateien (*.*)|*.*",
+            CheckFileExists = true,
+            Multiselect = false
+        };
+
+        var localPrograms = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "Programs");
+        if (Directory.Exists(localPrograms))
+            dialog.InitialDirectory = localPrograms;
+        else
+        {
+            var pf = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
+            if (Directory.Exists(pf))
+                dialog.InitialDirectory = pf;
+        }
+
+        if (dialog.ShowDialog(this) != true)
+            return;
+
+        var path = dialog.FileName;
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+            return;
+
+        try { path = Path.GetFullPath(path); }
+        catch { /* keep as-is */ }
+
+        if (!path.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
+        {
+            MessageBox.Show(this, "Bitte eine .exe-Datei wählen.", "KlarWin",
+                MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var name = AppFriendlyName.DescribeExecutable(path);
+        if (string.IsNullOrWhiteSpace(name) || name.Length < 2)
+            name = Path.GetFileNameWithoutExtension(path);
+
+        var candidate = new AutostartCandidate
+        {
+            Name = name,
+            ExecutablePath = path,
+            Arguments = "",
+            Source = "Manuell gewählt"
+        };
+
+        var existing = _candidateRows.FirstOrDefault(r =>
+            r.Candidate is not null
+            && string.Equals(r.Candidate.IdentityKey, candidate.IdentityKey, StringComparison.OrdinalIgnoreCase));
+        if (existing is not null)
+        {
+            existing.SetCheckedSilent(true);
+            CandidateList.ScrollIntoView(existing);
+            _statusHint = $"„{existing.Title}“ war schon in der Liste — angehakt.";
+            UpdateFilterHint();
+            return;
+        }
+
+        var row = MakeCandidateRow(candidate);
+        row.SetCheckedSilent(true);
+        _candidateRows.Insert(0, row);
+        CandidateList.ScrollIntoView(row);
+        _statusHint = $"„{name}“ hinzugefügt und angehakt. Mit „Zum Autostart hinzufügen“ bestätigen.";
+        ApplyFilter();
     }
 
     private void OnBackClick(object sender, RoutedEventArgs e)

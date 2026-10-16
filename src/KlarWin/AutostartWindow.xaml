@@ -76,6 +76,9 @@
                     Content="Startlayout …" Click="OnStartLayoutClick"/>
             <Button x:Name="BtnBack" Style="{StaticResource GhostButton}" Margin="0,0,10,8"
                     Content="Zurück" Visibility="Collapsed" Click="OnBackClick"/>
+            <Button x:Name="BtnBrowseExe" Style="{StaticResource GhostButton}" Margin="0,0,10,8"
+                    Content="Andere App wählen …" Visibility="Collapsed" Click="OnBrowseExeClick"
+                    ToolTip="Beliebige .exe wählen, falls sie in der Liste fehlt (z. B. portable Programme)"/>
             <Button x:Name="BtnConfirmAdd" Style="{StaticResource ActionButton}" Margin="0,0,10,8"
                     Content="Zum Autostart hinzufügen" Visibility="Collapsed" Click="OnConfirmAddClick"/>
         </WrapPanel>

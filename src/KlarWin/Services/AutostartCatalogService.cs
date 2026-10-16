@@ -54,7 +54,9 @@ public sealed class AutostartCatalogService
             arguments = (arguments ?? "").Trim();
             var key = string.IsNullOrWhiteSpace(arguments) ? path : $"{path}|{arguments}";
 
-            if (already.Identities.Contains(key) || already.Names.Contains(name))
+            // Only hide by path (+ args), never by display name — same title for different
+            // EXEs (or a generic Autostart name) previously hid unrelated apps from the picker.
+            if (already.Contains(key))
                 return;
 
             // Skip trivial stubs that only wrap explorer
@@ -93,30 +95,27 @@ public sealed class AutostartCatalogService
         foreach (var profile in BrowserProfileCatalogService.ListProfiles())
             TryAdd(profile.DisplayName, profile.ExecutablePath, $"{profile.BrowserName}-Profil", profile.Arguments);
 
-        foreach (var app in InstalledAppsCatalogService.ListApps(1200))
+        // High ceiling: alphabetical Take(1200) previously dropped late-alphabet apps.
+        foreach (var app in InstalledAppsCatalogService.ListApps(8000))
             TryAdd(app.Name, app.ExePath, string.IsNullOrWhiteSpace(app.Source) ? "Installiert" : app.Source);
 
         void TryAddPlain(string? name, string? exePath, string source) => TryAdd(name, exePath, source);
         AddFromAppPaths(TryAddPlain);
         AddFromWindowsApps(TryAddPlain);
         AddFromUninstallRegistry(TryAddPlain);
+        AddFromLocalPrograms(TryAddPlain);
 
         return byKey.Values
             .OrderBy(c => c.Name, StringComparer.CurrentCultureIgnoreCase)
             .ToList();
     }
 
-    private static (HashSet<string> Identities, HashSet<string> Names) CollectAlreadyAutostart(
-        IReadOnlyList<AutostartEntry> entries)
+    private static HashSet<string> CollectAlreadyAutostart(IReadOnlyList<AutostartEntry> entries)
     {
         var identities = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var entry in entries)
         {
-            if (!string.IsNullOrWhiteSpace(entry.Name))
-                names.Add(entry.Name.Trim());
-
             if (entry.Location.Contains("Ordner", StringComparison.Ordinal))
             {
                 var link = entry.Command;
@@ -133,7 +132,7 @@ public sealed class AutostartCatalogService
             TryAddIdentity(identities, exe, entry.Command, profileDir);
         }
 
-        return (identities, names);
+        return identities;
     }
 
     private static void TryAddIdentity(HashSet<string> identities, string? exe, string argsOrCommand, string? profileDir)
@@ -219,10 +218,14 @@ public sealed class AutostartCatalogService
             {
                 try
                 {
-                    foreach (var exe in Directory.EnumerateFiles(dir, "*.exe", SearchOption.TopDirectoryOnly).Take(4))
+                    foreach (var exe in Directory.EnumerateFiles(dir, "*.exe", SearchOption.TopDirectoryOnly).Take(16))
                     {
                         var leaf = Path.GetFileNameWithoutExtension(exe);
                         var folder = Path.GetFileName(dir);
+                        if (leaf.Contains("uninstall", StringComparison.OrdinalIgnoreCase)
+                            || leaf.Equals("crashpad_handler", StringComparison.OrdinalIgnoreCase))
+                            continue;
+
                         var label = PrettyStoreName(leaf);
                         if (folder.Contains("ChatGPT", StringComparison.OrdinalIgnoreCase)
                             || leaf.Contains("chatgpt", StringComparison.OrdinalIgnoreCase))
@@ -233,6 +236,12 @@ public sealed class AutostartCatalogService
                                  && (folder.Contains("Express", StringComparison.OrdinalIgnoreCase)
                                      || leaf.Contains("Express", StringComparison.OrdinalIgnoreCase)))
                             label = "Adobe Express";
+                        else
+                        {
+                            var fromMeta = AppFriendlyName.DescribeExecutable(exe);
+                            if (!string.IsNullOrWhiteSpace(fromMeta) && fromMeta.Length > label.Length)
+                                label = fromMeta;
+                        }
 
                         tryAdd(label, exe, "Store / WindowsApps");
                     }
@@ -334,6 +343,48 @@ public sealed class AutostartCatalogService
             displayIcon = displayIcon[..comma].Trim().Trim('"');
 
         return displayIcon.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) ? displayIcon : null;
+    }
+
+    /// <summary>Direct scan of %LocalAppData%\Programs — same source InstalledApps uses, kept here as a safety net.</summary>
+    private static void AddFromLocalPrograms(Action<string?, string?, string> tryAdd)
+    {
+        var root = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "Programs");
+        if (!Directory.Exists(root)) return;
+
+        try
+        {
+            foreach (var dir in Directory.EnumerateDirectories(root))
+            {
+                try
+                {
+                    var folder = Path.GetFileName(dir);
+                    foreach (var exe in Directory.EnumerateFiles(dir, "*.exe", SearchOption.TopDirectoryOnly).Take(8))
+                    {
+                        var leaf = Path.GetFileName(exe);
+                        if (leaf.Contains("uninstall", StringComparison.OrdinalIgnoreCase)
+                            || leaf.Equals("crashpad_handler.exe", StringComparison.OrdinalIgnoreCase)
+                            || leaf.Equals("update.exe", StringComparison.OrdinalIgnoreCase)
+                            || leaf.Equals("setup.exe", StringComparison.OrdinalIgnoreCase))
+                            continue;
+
+                        var label = AppFriendlyName.DescribeExecutable(exe);
+                        if (string.IsNullOrWhiteSpace(label) || label.Length < 2)
+                            label = folder;
+                        tryAdd(label, exe, "LocalAppData\\Programs");
+                    }
+                }
+                catch
+                {
+                    // access denied
+                }
+            }
+        }
+        catch
+        {
+            // ignore
+        }
     }
 
     internal static string? ResolveShortcutTarget(string path)

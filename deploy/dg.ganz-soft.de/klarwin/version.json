@@ -1,6 +1,6 @@
 ﻿{
-  "version": "1.3.68",
+  "version": "1.3.69",
   "url": "https://ganz-soft.de/klarwin/KlarWin-Setup.zip",
-  "notes": "Apps & Treiber: winget-Ids korrekt aus der Tabelle; keine falschen „Kein Installer“-Fehler mehr.",
+  "notes": "Autostart: mehr Programme (LocalAppData\\Programs, Angeheftet, Desktop-EXEs), kein Namensfilter mehr, „Andere App wählen …“ für fehlende/portable Apps.",
   "published": "2026-10-16"
 }
