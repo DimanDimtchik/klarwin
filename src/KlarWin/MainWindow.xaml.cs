@@ -8,6 +8,7 @@ using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
+using System.Windows.Shapes;
 using System.Windows.Threading;
 using KlarWin.Services;
 using Microsoft.Win32;
@@ -4929,16 +4930,124 @@ public partial class MainWindow : Window
                     ? "Nach dem erneuten Prüfen sind die gewählten Updates nicht mehr in der Liste."
                     : $"{stillThere.Count} der gewählten Updates stehen weiterhin in der Liste"
                       + (batch.Failed > 0
-                          ? " — siehe Fehler oben (oft: Administratorrechte nötig)."
+                          ? " — siehe Ampel / Details (oft: Administratorrechte nötig)."
                           : " — winget meldet sie noch (Neustart, andere Architektur oder verzögerte Katalog-Aktualisierung).");
 
-                var skipPart = batch.Skipped > 0 ? $" · {batch.Skipped} ○" : "";
-                PanelBody.Text =
-                    $"Installationslauf: {batch.Succeeded} ✓{skipPart} · {batch.Failed} ✗\n" +
-                    leftover + "\n\n" +
-                    batch.SummaryText;
+                PanelBody.Text = leftover;
+                ShowInstallResultAmpel(batch, batch.SummaryText);
             }
         }
+    }
+
+    /// <summary>
+    /// Ampel-Zusammenfassung über der Update-Liste: Grün = ok, Gelb = übersprungen, Rot = fehlgeschlagen.
+    /// </summary>
+    private void ShowInstallResultAmpel(SoftwareInstallBatchResult batch, string detailLines)
+    {
+        if (OptionsPanel.Visibility != Visibility.Visible)
+            OptionsPanel.Visibility = Visibility.Visible;
+
+        // Vorherige Ampel entfernen (falls Liste neu aufgebaut wurde)
+        for (var i = OptionsPanel.Children.Count - 1; i >= 0; i--)
+        {
+            if (OptionsPanel.Children[i] is FrameworkElement { Tag: "install-ampel" })
+                OptionsPanel.Children.RemoveAt(i);
+        }
+
+        var card = new Border
+        {
+            Tag = "install-ampel",
+            Background = new SolidColorBrush(Color.FromRgb(0xFB, 0xFD, 0xFA)),
+            BorderBrush = new SolidColorBrush(Color.FromRgb(0xC3, 0xD1, 0xC8)),
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(8),
+            Padding = new Thickness(14, 12, 14, 12),
+            Margin = new Thickness(0, 0, 0, 14)
+        };
+
+        var root = new StackPanel();
+        root.Children.Add(new TextBlock
+        {
+            Text = "Letzter Installationslauf",
+            FontFamily = new FontFamily("Bahnschrift"),
+            FontSize = 15,
+            FontWeight = FontWeights.SemiBold,
+            Margin = new Thickness(0, 0, 0, 10)
+        });
+
+        var lights = new WrapPanel { Margin = new Thickness(0, 0, 0, 8) };
+        lights.Children.Add(BuildAmpelLight(
+            Color.FromRgb(0x2F, 0x6A, 0x4A),
+            Color.FromRgb(0xC5, 0xD4, 0xC8),
+            batch.Succeeded,
+            "Erfolgreich",
+            active: batch.Succeeded > 0));
+        lights.Children.Add(BuildAmpelLight(
+            Color.FromRgb(0xC4, 0x8A, 0x1A),
+            Color.FromRgb(0xE8, 0xD9, 0xA8),
+            batch.Skipped,
+            "Übersprungen",
+            active: batch.Skipped > 0));
+        lights.Children.Add(BuildAmpelLight(
+            Color.FromRgb(0xA3, 0x3B, 0x2B),
+            Color.FromRgb(0xE5, 0xC4, 0xBE),
+            batch.Failed,
+            "Fehlgeschlagen",
+            active: batch.Failed > 0));
+        root.Children.Add(lights);
+
+        if (!string.IsNullOrWhiteSpace(detailLines))
+        {
+            root.Children.Add(new TextBlock
+            {
+                Text = detailLines,
+                FontSize = 13,
+                Foreground = new SolidColorBrush(Color.FromRgb(0x4A, 0x5C, 0x54)),
+                TextWrapping = TextWrapping.Wrap,
+                Margin = new Thickness(0, 4, 0, 0)
+            });
+        }
+
+        card.Child = root;
+        OptionsPanel.Children.Insert(0, card);
+    }
+
+    private static UIElement BuildAmpelLight(
+        Color onColor,
+        Color offColor,
+        int count,
+        string label,
+        bool active)
+    {
+        var color = active ? onColor : offColor;
+        var panel = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Margin = new Thickness(0, 0, 18, 6),
+            VerticalAlignment = VerticalAlignment.Center
+        };
+
+        panel.Children.Add(new Ellipse
+        {
+            Width = 18,
+            Height = 18,
+            Fill = new SolidColorBrush(color),
+            Stroke = new SolidColorBrush(Color.FromArgb(0x55, onColor.R, onColor.G, onColor.B)),
+            StrokeThickness = 1,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(0, 0, 8, 0)
+        });
+
+        panel.Children.Add(new TextBlock
+        {
+            Text = $"{count} {label}",
+            FontSize = 14,
+            FontWeight = active ? FontWeights.SemiBold : FontWeights.Normal,
+            Foreground = new SolidColorBrush(active ? Color.FromRgb(0x18, 0x24, 0x1F) : Color.FromRgb(0x8A, 0x96, 0x90)),
+            VerticalAlignment = VerticalAlignment.Center
+        });
+
+        return panel;
     }
 
     private void OfferExternalUpdateLinks(SoftwareInstallBatchResult batch)
