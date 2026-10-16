@@ -4750,9 +4750,15 @@ public partial class MainWindow : Window
                     ? $"{item.Id} · Microsoft Store"
                     : $"{item.Id} · {external.Hint}";
             }
+            else if (external is { Kind: SoftwareUpdateExternalKind.AppSelfUpdate })
+            {
+                hint = string.IsNullOrWhiteSpace(external.Hint)
+                    ? $"{item.Id} · Update in der App"
+                    : $"{item.Id} · {external.Hint}";
+            }
             else if (external is { Kind: SoftwareUpdateExternalKind.WindowsUpdate })
             {
-                hint = $"{item.Id} · oft nur über Windows Update zuverlässig.";
+                hint = $"{item.Id} · Windows Update";
             }
             else
             {

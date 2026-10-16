@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.IO;
 
 namespace KlarWin.Services;
 
@@ -6,7 +7,9 @@ public enum SoftwareUpdateExternalKind
 {
     None,
     MicrosoftStore,
-    WindowsUpdate
+    WindowsUpdate,
+    /// <summary>Open the app itself (preferably its built-in update / About page).</summary>
+    AppSelfUpdate
 }
 
 /// <summary>
@@ -20,6 +23,12 @@ public sealed class SoftwareUpdateExternalAction
     public string ButtonLabel { get; init; } = "";
     public string Uri { get; init; } = "";
     public string Hint { get; init; } = "";
+    /// <summary>Optional: launch this exe (e.g. msedge.exe) instead of a protocol URI.</summary>
+    public string LaunchFileName { get; init; } = "";
+    public string LaunchArguments { get; init; } = "";
+    /// <summary>On open: if WU has a matching pending update, open Windows Update instead.</summary>
+    public bool ProbeWindowsUpdateFirst { get; init; }
+    public string[] WindowsUpdateMatchNeedles { get; init; } = [];
 
     /// <summary>
     /// winget Id / common aliases → Microsoft Store ProductId (9…), so we open the
@@ -28,12 +37,9 @@ public sealed class SoftwareUpdateExternalAction
     private static readonly Dictionary<string, string> KnownStoreProductIds =
         new(StringComparer.OrdinalIgnoreCase)
         {
-            // Microsoft 365 Copilot (ex Office Hub) — NOT consumer „Microsoft Copilot“
             ["Microsoft.365Copilot"] = "9WZDNCRD29V9",
             ["9WZDNCRD29V9"] = "9WZDNCRD29V9",
-            // Consumer Microsoft Copilot
             ["9NHT9RB2F4HD"] = "9NHT9RB2F4HD",
-            // Outlook for Windows (new)
             ["9NRX3BBCDFS5"] = "9NRX3BBCDFS5",
             ["Microsoft.OutlookForWindows"] = "9NRX3BBCDFS5",
         };
@@ -54,11 +60,8 @@ public sealed class SoftwareUpdateExternalAction
             return MicrosoftStore(item.Name, item.Id);
         }
 
-        if (IsKnownWindowsUpdateApp(item))
-        {
-            return WindowsUpdate(item.Name, item.Id,
-                "Update läuft zuverlässiger über Windows Update (nicht über winget).");
-        }
+        if (IsEdge(item))
+            return EdgeSelfUpdate(item.Name, item.Id);
 
         if (IsKnownMicrosoftStoreApp(item))
         {
@@ -76,6 +79,9 @@ public sealed class SoftwareUpdateExternalAction
         if (hint.Contains("Installationstechnologie", StringComparison.OrdinalIgnoreCase)
             || hint.Contains("nicht über winget aktualisierbar", StringComparison.OrdinalIgnoreCase))
         {
+            if (IsEdge(item))
+                return EdgeSelfUpdate(item.Name, item.Id);
+
             return TryForItem(item)
                    ?? WindowsUpdate(item.Name, item.Id,
                        "winget kann dieses Paket nicht aktualisieren — Windows Update oder Store nutzen.");
@@ -88,6 +94,24 @@ public sealed class SoftwareUpdateExternalAction
         }
 
         return null;
+    }
+
+    public static SoftwareUpdateExternalAction EdgeSelfUpdate(string name, string id)
+    {
+        var edge = FindEdgeExecutable();
+        return new SoftwareUpdateExternalAction
+        {
+            PackageName = name,
+            PackageId = id,
+            Kind = SoftwareUpdateExternalKind.AppSelfUpdate,
+            ButtonLabel = "In Edge aktualisieren",
+            Hint = "Prüft kurz Windows Update; wenn dort nichts liegt, öffnet Edge die eigene Update-Seite (Einstellungen → Info).",
+            Uri = "microsoft-edge:edge://settings/help",
+            LaunchFileName = edge ?? "",
+            LaunchArguments = "edge://settings/help",
+            ProbeWindowsUpdateFirst = true,
+            WindowsUpdateMatchNeedles = ["Microsoft Edge", "Edge"]
+        };
     }
 
     public static SoftwareUpdateExternalAction MicrosoftStore(
@@ -107,7 +131,6 @@ public sealed class SoftwareUpdateExternalAction
         }
         else
         {
-            // Last resort: search — can hit a similarly named different app (avoid for Copilot).
             uri = $"ms-windows-store://search/?query={System.Uri.EscapeDataString(string.IsNullOrWhiteSpace(name) ? id : name)}";
         }
 
@@ -160,14 +183,13 @@ public sealed class SoftwareUpdateExternalAction
         return "Update über den Microsoft Store (Produktseite, keine Suche).";
     }
 
-    private static bool IsKnownWindowsUpdateApp(SoftwareUpdateItem item)
+    private static bool IsEdge(SoftwareUpdateItem item)
     {
         var id = item.Id ?? "";
         var name = item.Name ?? "";
-        if (id.Equals("Microsoft.Edge", StringComparison.OrdinalIgnoreCase)) return true;
-        if (id.Contains("Microsoft.Edge", StringComparison.OrdinalIgnoreCase)) return true;
-        if (name.Equals("Microsoft Edge", StringComparison.OrdinalIgnoreCase)) return true;
-        return false;
+        return id.Equals("Microsoft.Edge", StringComparison.OrdinalIgnoreCase)
+               || id.Contains("Microsoft.Edge", StringComparison.OrdinalIgnoreCase)
+               || name.Equals("Microsoft Edge", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool IsKnownMicrosoftStoreApp(SoftwareUpdateItem item)
@@ -179,24 +201,61 @@ public sealed class SoftwareUpdateExternalAction
         if (id.Contains("365Copilot", StringComparison.OrdinalIgnoreCase)) return true;
         if (name.Contains("Outlook for Windows", StringComparison.OrdinalIgnoreCase)) return true;
         if (id.Contains("OutlookForWindows", StringComparison.OrdinalIgnoreCase)) return true;
-        // Avoid matching bare „Copilot“ → consumer Copilot search trap
         return false;
+    }
+
+    private static string? FindEdgeExecutable()
+    {
+        var pf86 = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86);
+        var pf = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
+        string[] candidates =
+        [
+            Path.Combine(pf86, "Microsoft", "Edge", "Application", "msedge.exe"),
+            Path.Combine(pf, "Microsoft", "Edge", "Application", "msedge.exe")
+        ];
+        return candidates.FirstOrDefault(File.Exists);
     }
 
     public bool TryOpen()
     {
         try
         {
-            Process.Start(new ProcessStartInfo
+            if (ProbeWindowsUpdateFirst
+                && WindowsUpdateMatchNeedles.Length > 0
+                && WindowsUpdateAvailability.HasPendingMatching(WindowsUpdateMatchNeedles))
             {
-                FileName = Uri,
-                UseShellExecute = true
-            });
-            return true;
+                return OpenTarget("ms-settings:windowsupdate", launchFile: null, launchArgs: null);
+            }
+
+            return OpenTarget(Uri, LaunchFileName, LaunchArguments);
         }
         catch
         {
             return false;
         }
+    }
+
+    private static bool OpenTarget(string? uri, string? launchFile, string? launchArgs)
+    {
+        if (!string.IsNullOrWhiteSpace(launchFile))
+        {
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = launchFile,
+                Arguments = launchArgs ?? "",
+                UseShellExecute = true
+            });
+            return true;
+        }
+
+        if (string.IsNullOrWhiteSpace(uri))
+            return false;
+
+        Process.Start(new ProcessStartInfo
+        {
+            FileName = uri,
+            UseShellExecute = true
+        });
+        return true;
     }
 }

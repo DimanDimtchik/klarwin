@@ -82,12 +82,13 @@ public partial class UpdateExternalLinksDialog : Window
         }
     }
 
-    private void OnActionClick(object sender, RoutedEventArgs e)
+    private async void OnActionClick(object sender, RoutedEventArgs e)
     {
         if (sender is not Button { Tag: SoftwareUpdateExternalAction action })
             return;
 
-        if (!action.TryOpen())
+        var opened = await Task.Run(() => action.TryOpen());
+        if (!opened)
         {
             MessageBox.Show(
                 this,
