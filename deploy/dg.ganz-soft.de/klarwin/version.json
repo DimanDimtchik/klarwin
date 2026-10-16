@@ -1,6 +1,6 @@
 ﻿{
-  "version": "1.3.64",
+  "version": "1.3.65",
   "url": "https://ganz-soft.de/klarwin/KlarWin-Setup.zip",
-  "notes": "Beschleunigen: Energiepläne unter deutsch/englisch Windows; klare Hinweise statt leerer Liste.",
+  "notes": "Beschleunigen: Umlaute in Energieplänen (OEM/UTF-8) korrekt; feste DE-Namen für bekannte Pläne.",
   "published": "2026-10-16"
 }
