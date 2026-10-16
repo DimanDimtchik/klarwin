@@ -11,10 +11,10 @@
     <Product>KlarWin</Product>
     <Company>GanzSoft</Company>
     <Description>Windows aufräumen, beschleunigen, Netzwerk und KI-Last im Blick.</Description>
-    <Version>1.3.63</Version>
-    <AssemblyVersion>1.3.63.0</AssemblyVersion>
-    <FileVersion>1.3.63.0</FileVersion>
-    <InformationalVersion>1.3.63</InformationalVersion>
+    <Version>1.3.64</Version>
+    <AssemblyVersion>1.3.64.0</AssemblyVersion>
+    <FileVersion>1.3.64.0</FileVersion>
+    <InformationalVersion>1.3.64</InformationalVersion>
     <ApplicationIcon>Assets\klarwin.ico</ApplicationIcon>
   </PropertyGroup>
   <ItemGroup>

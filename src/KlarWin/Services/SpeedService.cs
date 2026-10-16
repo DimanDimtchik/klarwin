@@ -27,8 +27,8 @@ public sealed class SpeedResult
 
 public sealed class SpeedService
 {
-    private const string HighPerformanceGuid = "8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c";
-    private const string BalancedGuid = "381b4222-f694-41f0-9685-ff1bb2600008";
+    private const string HighPerformanceGuid = PowerPlanService.HighPerformanceGuid;
+    private const string BalancedGuid = PowerPlanService.BalancedGuid;
 
     public static IReadOnlyList<(string Id, string Label, string Hint, bool Default)> MiscOptions { get; } =
     [
@@ -72,13 +72,18 @@ public sealed class SpeedService
 
         if (!string.IsNullOrWhiteSpace(options.PowerPlanGuid))
         {
-            notes.Add(PowerPlanService.ActivatePlan(options.PowerPlanGuid)
-                ? "Energieplan gewechselt."
-                : "Energieplan konnte nicht gewechselt werden — ggf. als Administrator starten.");
+            notes.Add(PowerPlanService.ActivatePlanDetailed(options.PowerPlanGuid).Message);
         }
 
-        if (options.HighPerformance) SetPlan(HighPerformanceGuid, "Hochleistung", notes);
-        if (options.BalancedPlan) SetPlan(BalancedGuid, "Ausgewogen", notes);
+        if (options.HighPerformance)
+        {
+            notes.Add(PowerPlanService.ActivatePlanDetailed(HighPerformanceGuid).Message);
+        }
+
+        if (options.BalancedPlan)
+        {
+            notes.Add(PowerPlanService.ActivatePlanDetailed(BalancedGuid).Message);
+        }
 
         foreach (var charge in options.DellChargingModes)
         {
@@ -102,14 +107,6 @@ public sealed class SpeedService
         if (options.DisablePeek) SetAdvanced("DisablePreviewDesktop", 1, notes, "Desktop-Vorschau aus.");
         if (notes.Count == 0) notes.Add("Nichts ausgewählt.");
         return new SpeedResult { Notes = notes };
-    }
-
-    private static void SetPlan(string guid, string label, List<string> notes)
-    {
-        var code = Run("powercfg", $"/setactive {guid}");
-        notes.Add(code == 0
-            ? $"Energieplan „{label}“ aktiviert."
-            : "Energieplan konnte nicht geändert werden — ggf. als Administrator starten.");
     }
 
     private static void SetScreenTimeout(int? acMinutes, int? dcMinutes, List<string> notes)

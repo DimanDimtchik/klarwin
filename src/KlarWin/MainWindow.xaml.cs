@@ -791,7 +791,15 @@ public partial class MainWindow : Window
         }
         else if (!string.IsNullOrWhiteSpace(timeoutSummary))
         {
-            PanelBody.Text = "Energieplan und weitere Optionen — nur auswählen, was Sie wirklich möchten.\n" + timeoutSummary;
+            PanelBody.Text =
+                "Energieplan und weitere Optionen — nur auswählen, was Sie wirklich möchten. " +
+                "Nach dem Anwenden erscheinen Ergebnis und Hinweise hier.\n" + timeoutSummary;
+        }
+        else
+        {
+            PanelBody.Text =
+                "Energieplan und weitere Optionen — nur auswählen, was Sie wirklich möchten. " +
+                "Nach dem Anwenden erscheinen Ergebnis und Hinweise hier.";
         }
         ShowSpeedOptions(includeLaptopPower);
     });
@@ -3162,10 +3170,19 @@ public partial class MainWindow : Window
         _itemChecks.Clear();
 
         AddOptionHeader("Energieplan");
-        foreach (var option in SpeedService.BuildOptions(includeLaptopPower))
+        var planOptions = SpeedService.BuildOptions(includeLaptopPower)
+            .Where(option => option.Id.StartsWith("plan-", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        if (planOptions.Count == 0)
         {
-            if (!option.Id.StartsWith("plan-", StringComparison.OrdinalIgnoreCase)) continue;
-            AddOptionCheckbox(option.Id, option.Label, option.Hint, option.Default);
+            AddCurrentSettingNote(PowerPlanService.EmptyListHint());
+        }
+        else
+        {
+            foreach (var option in planOptions)
+            {
+                AddOptionCheckbox(option.Id, option.Label, option.Hint, option.Default);
+            }
         }
 
         if (includeLaptopPower)
