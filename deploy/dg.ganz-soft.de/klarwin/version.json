@@ -1,6 +1,6 @@
 ﻿{
-  "version": "1.3.76",
+  "version": "1.3.77",
   "url": "https://ganz-soft.de/klarwin/KlarWin-Setup.zip",
-  "notes": "Apps & Treiber: Installationslauf als Ampel (grün/gelb/rot) statt Symbolzeile.",
+  "notes": "Store-Button öffnet die richtige Produktseite (z. B. Microsoft 365 Copilot ≠ Copilot); Ampel-Build-Fix.",
   "published": "2026-10-16"
 }

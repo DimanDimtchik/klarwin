@@ -8,7 +8,6 @@ using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
-using System.Windows.Shapes;
 using System.Windows.Threading;
 using KlarWin.Services;
 using Microsoft.Win32;
@@ -4747,7 +4746,9 @@ public partial class MainWindow : Window
             }
             else if (external is { Kind: SoftwareUpdateExternalKind.MicrosoftStore })
             {
-                hint = $"{item.Id} · Microsoft Store — winget versuchen oder Store öffnen.";
+                hint = string.IsNullOrWhiteSpace(external.Hint)
+                    ? $"{item.Id} · Microsoft Store"
+                    : $"{item.Id} · {external.Hint}";
             }
             else if (external is { Kind: SoftwareUpdateExternalKind.WindowsUpdate })
             {
@@ -5027,7 +5028,7 @@ public partial class MainWindow : Window
             VerticalAlignment = VerticalAlignment.Center
         };
 
-        panel.Children.Add(new Ellipse
+        panel.Children.Add(new System.Windows.Shapes.Ellipse
         {
             Width = 18,
             Height = 18,

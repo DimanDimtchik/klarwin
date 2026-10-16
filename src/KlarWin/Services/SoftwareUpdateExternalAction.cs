@@ -21,6 +21,23 @@ public sealed class SoftwareUpdateExternalAction
     public string Uri { get; init; } = "";
     public string Hint { get; init; } = "";
 
+    /// <summary>
+    /// winget Id / common aliases → Microsoft Store ProductId (9…), so we open the
+    /// correct Store page instead of a fuzzy search (e.g. „Copilot“ ≠ „Microsoft 365 Copilot“).
+    /// </summary>
+    private static readonly Dictionary<string, string> KnownStoreProductIds =
+        new(StringComparer.OrdinalIgnoreCase)
+        {
+            // Microsoft 365 Copilot (ex Office Hub) — NOT consumer „Microsoft Copilot“
+            ["Microsoft.365Copilot"] = "9WZDNCRD29V9",
+            ["9WZDNCRD29V9"] = "9WZDNCRD29V9",
+            // Consumer Microsoft Copilot
+            ["9NHT9RB2F4HD"] = "9NHT9RB2F4HD",
+            // Outlook for Windows (new)
+            ["9NRX3BBCDFS5"] = "9NRX3BBCDFS5",
+            ["Microsoft.OutlookForWindows"] = "9NRX3BBCDFS5",
+        };
+
     public static SoftwareUpdateExternalAction? TryForItem(SoftwareUpdateItem item)
     {
         if (item.Source.Equals("wu-driver", StringComparison.OrdinalIgnoreCase)
@@ -31,7 +48,8 @@ public sealed class SoftwareUpdateExternalAction
         }
 
         if (item.PackageSource.Equals("msstore", StringComparison.OrdinalIgnoreCase)
-            || LooksLikeMsStoreProductId(item.Id))
+            || LooksLikeMsStoreProductId(item.Id)
+            || TryResolveStoreProductId(item.Id) is not null)
         {
             return MicrosoftStore(item.Name, item.Id);
         }
@@ -45,7 +63,7 @@ public sealed class SoftwareUpdateExternalAction
         if (IsKnownMicrosoftStoreApp(item))
         {
             return MicrosoftStore(item.Name, item.Id,
-                "Update läuft über den Microsoft Store.");
+                BuildStoreHint(item.Id, item.Name));
         }
 
         return null;
@@ -77,10 +95,21 @@ public sealed class SoftwareUpdateExternalAction
         string id,
         string? hint = null)
     {
-        // Qualify System.Uri — property "Uri" on this type would otherwise shadow it.
-        var uri = LooksLikeMsStoreProductId(id)
-            ? $"ms-windows-store://pdp/?ProductId={System.Uri.EscapeDataString(id)}"
-            : $"ms-windows-store://search/?query={System.Uri.EscapeDataString(string.IsNullOrWhiteSpace(name) ? id : name)}";
+        var productId = TryResolveStoreProductId(id);
+        string uri;
+        if (!string.IsNullOrWhiteSpace(productId))
+        {
+            uri = $"ms-windows-store://pdp/?ProductId={System.Uri.EscapeDataString(productId)}";
+        }
+        else if (LooksLikeMsStoreProductId(id))
+        {
+            uri = $"ms-windows-store://pdp/?ProductId={System.Uri.EscapeDataString(id)}";
+        }
+        else
+        {
+            // Last resort: search — can hit a similarly named different app (avoid for Copilot).
+            uri = $"ms-windows-store://search/?query={System.Uri.EscapeDataString(string.IsNullOrWhiteSpace(name) ? id : name)}";
+        }
 
         return new SoftwareUpdateExternalAction
         {
@@ -89,7 +118,7 @@ public sealed class SoftwareUpdateExternalAction
             Kind = SoftwareUpdateExternalKind.MicrosoftStore,
             ButtonLabel = "Microsoft Store öffnen",
             Uri = uri,
-            Hint = hint ?? "Update über den Microsoft Store."
+            Hint = hint ?? BuildStoreHint(id, name)
         };
     }
 
@@ -113,6 +142,24 @@ public sealed class SoftwareUpdateExternalAction
         && id[0] is '9' or 'X'
         && id.All(c => char.IsLetterOrDigit(c));
 
+    public static string? TryResolveStoreProductId(string? wingetOrStoreId)
+    {
+        if (string.IsNullOrWhiteSpace(wingetOrStoreId)) return null;
+        if (LooksLikeMsStoreProductId(wingetOrStoreId)) return wingetOrStoreId;
+        return KnownStoreProductIds.TryGetValue(wingetOrStoreId.Trim(), out var pid) ? pid : null;
+    }
+
+    private static string BuildStoreHint(string id, string name)
+    {
+        if (id.Contains("365Copilot", StringComparison.OrdinalIgnoreCase)
+            || name.Contains("365 Copilot", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Microsoft 365 Copilot (Store-Id 9WZDNCRD29V9) — nicht die separate App „Microsoft Copilot“.";
+        }
+
+        return "Update über den Microsoft Store (Produktseite, keine Suche).";
+    }
+
     private static bool IsKnownWindowsUpdateApp(SoftwareUpdateItem item)
     {
         var id = item.Id ?? "";
@@ -120,9 +167,6 @@ public sealed class SoftwareUpdateExternalAction
         if (id.Equals("Microsoft.Edge", StringComparison.OrdinalIgnoreCase)) return true;
         if (id.Contains("Microsoft.Edge", StringComparison.OrdinalIgnoreCase)) return true;
         if (name.Equals("Microsoft Edge", StringComparison.OrdinalIgnoreCase)) return true;
-        if (id.Contains("Visual.C++", StringComparison.OrdinalIgnoreCase)
-            && id.Contains("Redist", StringComparison.OrdinalIgnoreCase))
-            return false; // VC++ is winget/admin, not WU UI
         return false;
     }
 
@@ -130,10 +174,12 @@ public sealed class SoftwareUpdateExternalAction
     {
         var id = item.Id ?? "";
         var name = item.Name ?? "";
-        if (name.Contains("Copilot", StringComparison.OrdinalIgnoreCase)) return true;
-        if (id.Contains("Copilot", StringComparison.OrdinalIgnoreCase)) return true;
+        if (TryResolveStoreProductId(id) is not null) return true;
+        if (name.Contains("365 Copilot", StringComparison.OrdinalIgnoreCase)) return true;
+        if (id.Contains("365Copilot", StringComparison.OrdinalIgnoreCase)) return true;
         if (name.Contains("Outlook for Windows", StringComparison.OrdinalIgnoreCase)) return true;
         if (id.Contains("OutlookForWindows", StringComparison.OrdinalIgnoreCase)) return true;
+        // Avoid matching bare „Copilot“ → consumer Copilot search trap
         return false;
     }
 
