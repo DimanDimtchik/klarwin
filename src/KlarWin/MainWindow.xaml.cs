@@ -668,7 +668,12 @@ public partial class MainWindow : Window
         host.Children.Insert(1, PanelProgressText);
     }
 
-    private UIElement BuildOptionRow(string label, string? hint, ImageSource? icon, CheckBox cb)
+    private UIElement BuildOptionRow(
+        string label,
+        string? hint,
+        ImageSource? icon,
+        CheckBox cb,
+        SoftwareUpdateExternalAction? externalAction = null)
     {
         var stack = new StackPanel { Margin = new Thickness(0, 0, 0, 12) };
         cb.Content = BuildCheckboxContent(label, icon);
@@ -683,6 +688,37 @@ public partial class MainWindow : Window
                 Foreground = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0x4A, 0x5C, 0x54)),
                 TextWrapping = TextWrapping.Wrap
             });
+        }
+
+        if (externalAction is not null)
+        {
+            var linkRow = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                Margin = new Thickness(26, 6, 0, 0)
+            };
+            var btn = new Button
+            {
+                Content = externalAction.ButtonLabel,
+                Style = (Style)FindResource("GhostButton"),
+                Padding = new Thickness(10, 4, 10, 4),
+                FontSize = 13,
+                Tag = externalAction
+            };
+            btn.Click += (_, _) =>
+            {
+                if (!externalAction.TryOpen())
+                {
+                    MessageBox.Show(
+                        this,
+                        $"Konnte „{externalAction.ButtonLabel}“ nicht öffnen.\n\nZiel: {externalAction.Uri}",
+                        "KlarWin",
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Warning);
+                }
+            };
+            linkRow.Children.Add(btn);
+            stack.Children.Add(linkRow);
         }
 
         return stack;
@@ -4701,14 +4737,34 @@ public partial class MainWindow : Window
             cb.Checked += (_, _) => SyncSoftwareUpdateMasterCheckbox();
             cb.Unchecked += (_, _) => SyncSoftwareUpdateMasterCheckbox();
             _itemChecks[id] = cb;
-            var hint = item.Source == "winget"
-                ? $"{item.Id} · {item.PackageSource}"
-                : "Windows Update";
+
+            var external = SoftwareUpdateExternalAction.TryForItem(item);
+            string hint;
+            if (item.Source == "wu-driver" || item.Kind.Equals("Treiber", StringComparison.OrdinalIgnoreCase))
+            {
+                hint = "Windows Update — KlarWin kann installieren, oder Einstellungen öffnen.";
+            }
+            else if (external is { Kind: SoftwareUpdateExternalKind.MicrosoftStore })
+            {
+                hint = $"{item.Id} · Microsoft Store — winget versuchen oder Store öffnen.";
+            }
+            else if (external is { Kind: SoftwareUpdateExternalKind.WindowsUpdate })
+            {
+                hint = $"{item.Id} · oft nur über Windows Update zuverlässig.";
+            }
+            else
+            {
+                hint = item.Source == "winget"
+                    ? $"{item.Id} · {item.PackageSource}"
+                    : "Windows Update";
+            }
+
             OptionsPanel.Children.Add(BuildOptionRow(
                 $"{item.Kind}: {item.Name}  ({item.CurrentVersion} → {item.AvailableVersion})",
                 hint,
                 null,
-                cb));
+                cb,
+                external));
         }
 
         UpdateSoftwareUpdatesSelectAllButton();
@@ -4842,6 +4898,11 @@ public partial class MainWindow : Window
 
             PanelBody.Text = batch.SummaryText;
 
+            if (batch.HasExternalFollowUps)
+            {
+                OfferExternalUpdateLinks(batch);
+            }
+
             if (batch.NeedsAdmin && !ShortcutOverlayService.IsAdministrator())
             {
                 OfferAdminResumeForUpdates(batch);
@@ -4880,6 +4941,17 @@ public partial class MainWindow : Window
                     batch.SummaryText;
             }
         }
+    }
+
+    private void OfferExternalUpdateLinks(SoftwareInstallBatchResult batch)
+    {
+        if (!batch.HasExternalFollowUps) return;
+
+        UpdateExternalLinksDialog.ShowForOwner(
+            this,
+            "Einige Updates laufen über den Microsoft Store oder Windows Update — "
+            + "nicht (zuverlässig) über winget. Ziel mit dem Button öffnen:",
+            batch.ExternalFollowUps);
     }
 
     private void OfferAdminResumeForUpdates(SoftwareInstallBatchResult batch)
@@ -4970,6 +5042,8 @@ public partial class MainWindow : Window
                     MessageBoxButton.OK,
                     batch.Failed > 0 ? MessageBoxImage.Warning : MessageBoxImage.Information);
                 PanelBody.Text = batch.SummaryText;
+                if (batch.HasExternalFollowUps)
+                    OfferExternalUpdateLinks(batch);
             }
             catch (Exception ex)
             {

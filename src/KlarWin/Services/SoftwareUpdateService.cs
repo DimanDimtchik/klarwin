@@ -30,8 +30,11 @@ public sealed class SoftwareInstallBatchResult
     public IReadOnlyList<string> AttemptedIds { get; init; } = [];
     /// <summary>Packages that failed specifically because elevation was required.</summary>
     public IReadOnlyList<SoftwareUpdateItem> AdminBlockedItems { get; init; } = [];
+    /// <summary>Packages that should be finished via Microsoft Store or Windows Update.</summary>
+    public IReadOnlyList<SoftwareUpdateExternalAction> ExternalFollowUps { get; init; } = [];
 
     public bool NeedsAdmin => AdminBlockedItems.Count > 0;
+    public bool HasExternalFollowUps => ExternalFollowUps.Count > 0;
 
     public string SummaryText => string.Join("\n", Lines.Where(n => !string.IsNullOrWhiteSpace(n)));
 
@@ -141,6 +144,7 @@ public sealed class SoftwareUpdateService
         var drivers = items.Where(i => i.Source == "wu-driver").ToList();
         var attemptedIds = items.Select(i => i.Id).ToList();
         var adminBlocked = new List<SoftwareUpdateItem>();
+        var externalFollowUps = new List<SoftwareUpdateExternalAction>();
         var total = apps.Count + (drivers.Count > 0 ? 1 : 0);
         var step = 0;
         var succeeded = 0;
@@ -187,12 +191,15 @@ public sealed class SoftwareUpdateService
             else if (SoftwareInstallBatchResult.IsSkippedMessage(line))
             {
                 skipped++;
+                TryAddExternalFollowUp(externalFollowUps, app, line);
             }
             else
             {
                 failed++;
                 if (SoftwareInstallBatchResult.IsAdminRequiredMessage(line))
                     adminBlocked.Add(app);
+                else
+                    TryAddExternalFollowUp(externalFollowUps, app, line);
             }
 
             step++;
@@ -226,12 +233,19 @@ public sealed class SoftwareUpdateService
             else if (SoftwareInstallBatchResult.IsSkippedMessage(line))
             {
                 skipped++;
+                foreach (var d in drivers)
+                    TryAddExternalFollowUp(externalFollowUps, d, line);
             }
             else
             {
                 failed++;
                 if (SoftwareInstallBatchResult.IsAdminRequiredMessage(line))
                     adminBlocked.AddRange(drivers);
+                else
+                {
+                    foreach (var d in drivers)
+                        TryAddExternalFollowUp(externalFollowUps, d, line);
+                }
             }
 
             step++;
@@ -253,9 +267,28 @@ public sealed class SoftwareUpdateService
             Failed = failed,
             Skipped = skipped,
             AttemptedIds = attemptedIds,
-            AdminBlockedItems = adminBlocked
+            AdminBlockedItems = adminBlocked,
+            ExternalFollowUps = DeduplicateExternal(externalFollowUps)
         };
     }
+
+    private static void TryAddExternalFollowUp(
+        List<SoftwareUpdateExternalAction> list,
+        SoftwareUpdateItem item,
+        string line)
+    {
+        var action = SoftwareUpdateExternalAction.TryFromInstallHint(item, line)
+                     ?? SoftwareUpdateExternalAction.TryForItem(item);
+        if (action is null) return;
+        list.Add(action);
+    }
+
+    private static IReadOnlyList<SoftwareUpdateExternalAction> DeduplicateExternal(
+        IEnumerable<SoftwareUpdateExternalAction> actions) =>
+        actions
+            .GroupBy(a => a.Kind + "|" + a.PackageId + "|" + a.Uri, StringComparer.OrdinalIgnoreCase)
+            .Select(g => g.First())
+            .ToList();
 
     public static bool IsWingetAvailable()
     {

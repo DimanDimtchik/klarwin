@@ -1,0 +1,34 @@
+<Window x:Class="KlarWin.UpdateExternalLinksDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="KlarWin — Update über Store / Windows Update"
+        Height="480" Width="580"
+        MinHeight="360" MinWidth="500"
+        WindowStartupLocation="CenterOwner"
+        ResizeMode="NoResize"
+        FontFamily="Sitka Text"
+        Foreground="#18241F"
+        Background="#FAF9F7"
+        ShowInTaskbar="False">
+    <Grid Margin="28,24,28,22">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <TextBlock FontFamily="Bahnschrift" FontSize="20" TextWrapping="Wrap"
+                   Text="Über Store oder Windows Update"/>
+        <TextBlock x:Name="MessageText" Grid.Row="1" Margin="0,10,0,12" FontSize="14"
+                   Foreground="#4A5C54" TextWrapping="Wrap"/>
+
+        <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto">
+            <StackPanel x:Name="ActionsPanel"/>
+        </ScrollViewer>
+
+        <Button Grid.Row="3" HorizontalAlignment="Right" Margin="0,16,0,0"
+                Style="{StaticResource ActionButton}" Padding="18,10"
+                Content="Schließen" IsDefault="True" IsCancel="True" Click="OnCloseClick"/>
+    </Grid>
+</Window>
