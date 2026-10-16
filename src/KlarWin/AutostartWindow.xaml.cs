@@ -256,7 +256,7 @@ public partial class AutostartWindow : Window
         BtnBrowseExe.IsEnabled = true;
         _statusHint = _candidateRows.Count == 0
             ? "Keine weiteren Programme gefunden. „Andere App wählen …“ öffnet jede .exe (auch portable)."
-            : $"{_candidateRows.Count} Programme — Chrome/Edge-Profile einzeln wählbar. Fehlt etwas: „Andere App wählen …“.";
+            : $"{_candidateRows.Count} Programme — inkl. Microsoft Store (z. B. BlueMail). Fehlt etwas: „Andere App wählen …“.";
         ApplyFilter();
         SearchBox.Focus();
     }

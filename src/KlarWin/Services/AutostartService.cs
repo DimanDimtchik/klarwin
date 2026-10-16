@@ -175,7 +175,12 @@ public sealed class AutostartService
         dynamic shell = Activator.CreateInstance(shellType)!;
         dynamic link = shell.CreateShortcut(linkPath);
         link.TargetPath = targetExe;
-        link.WorkingDirectory = Path.GetDirectoryName(targetExe) ?? "";
+        // Store AppsFolder launches use explorer.exe + shell:AppsFolder\AUMID — no app cwd.
+        var isStoreLaunch = Path.GetFileName(targetExe).Equals("explorer.exe", StringComparison.OrdinalIgnoreCase)
+                            && (arguments ?? "").Contains("shell:AppsFolder", StringComparison.OrdinalIgnoreCase);
+        link.WorkingDirectory = isStoreLaunch
+            ? Environment.GetFolderPath(Environment.SpecialFolder.Windows)
+            : (Path.GetDirectoryName(targetExe) ?? "");
         link.Description = description;
         if (!string.IsNullOrWhiteSpace(arguments))
             link.Arguments = arguments;
