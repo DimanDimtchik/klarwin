@@ -4705,7 +4705,7 @@ public partial class MainWindow : Window
             var master = new CheckBox
             {
                 IsChecked = false,
-                IsThreeState = true,
+                IsThreeState = false, // nur an, wenn wirklich alle Einträge markiert sind
                 FontSize = 14,
                 FontWeight = FontWeights.SemiBold,
                 Tag = "__select_all__"
@@ -4812,14 +4812,12 @@ public partial class MainWindow : Window
         var boxes = SoftwareUpdateItemCheckBoxes().ToList();
         if (boxes.Count == 0) return;
 
+        // Master nur aktiv, wenn alle einzeln angehakt sind — Teilauswahl = aus (kein „Kästchen“/Indeterminate).
         var allOn = boxes.All(c => c.IsChecked == true);
-        var allOff = boxes.All(c => c.IsChecked != true);
         _suppressSoftwareUpdateMasterSync = true;
         try
         {
-            if (allOn) master.IsChecked = true;
-            else if (allOff) master.IsChecked = false;
-            else master.IsChecked = null; // indeterminate
+            master.IsChecked = allOn;
         }
         finally
         {
