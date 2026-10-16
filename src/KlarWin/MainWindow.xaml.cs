@@ -4698,9 +4698,12 @@ public partial class MainWindow : Window
             cb.Checked += (_, _) => SyncSoftwareUpdateMasterCheckbox();
             cb.Unchecked += (_, _) => SyncSoftwareUpdateMasterCheckbox();
             _itemChecks[id] = cb;
+            var hint = item.Source == "winget"
+                ? $"{item.Id} · {item.PackageSource}"
+                : "Windows Update";
             OptionsPanel.Children.Add(BuildOptionRow(
                 $"{item.Kind}: {item.Name}  ({item.CurrentVersion} → {item.AvailableVersion})",
-                item.Source == "winget" ? "winget" : "Windows Update",
+                hint,
                 null,
                 cb));
         }

@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Text;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 
 namespace KlarWin.Services;
@@ -12,7 +13,10 @@ public sealed class SoftwareUpdateItem
     public string CurrentVersion { get; init; } = "";
     public string AvailableVersion { get; init; } = "";
     public string Kind { get; init; } = "Programm"; // Programm | Treiber
+    /// <summary>Kanal in KlarWin: winget | wu-driver</summary>
     public string Source { get; init; } = "winget";
+    /// <summary>winget-Quelle: winget | msstore | …</summary>
+    public string PackageSource { get; init; } = "winget";
     public object? NativeHandle { get; init; }
 }
 
@@ -140,7 +144,9 @@ public sealed class SoftwareUpdateService
                     IsIndeterminate = true
                 });
             });
-            var line = await Task.Run(() => InstallWinget(app.Id, app.Name, detailProgress), cancellationToken);
+            var line = await Task.Run(
+                () => InstallWinget(app.Id, app.Name, app.PackageSource, detailProgress),
+                cancellationToken);
             notes.Add(line);
             if (line.StartsWith('✓')) succeeded++;
             else failed++;
@@ -250,29 +256,218 @@ public sealed class SoftwareUpdateService
     {
         if (!IsWingetAvailable()) return [];
 
+        // 1) JSON wenn winget es kann (zuverlässige Ids)
+        var json = RunCapture(
+            "winget",
+            "upgrade --accept-source-agreements --disable-interactivity --format json",
+            WingetListTimeoutMs);
+        var fromJson = ParseWingetUpgradeJson(json);
+        if (fromJson.Count > 0)
+        {
+            return fromJson;
+        }
+
+        // 2) Tabelle über Spaltenköpfe (nicht Regex über Leerzeichen —
+        //    sonst werden Namensbruchstücke wie „Microsoft“ fälschlich als Id gelesen).
         var output = RunCapture(
             "winget",
-            "upgrade --source winget --accept-source-agreements --disable-interactivity",
+            "upgrade --accept-source-agreements --disable-interactivity",
             WingetListTimeoutMs);
-        var items = new List<SoftwareUpdateItem>();
-        foreach (var raw in output.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries))
-        {
-            var line = raw.TrimEnd();
-            if (line.StartsWith('-') || line.StartsWith("Name", StringComparison.OrdinalIgnoreCase)) continue;
-            if (line.Contains("Aktualisierungen verfügbar", StringComparison.OrdinalIgnoreCase)) continue;
-            if (line.Contains("package", StringComparison.OrdinalIgnoreCase) && line.Contains("Version", StringComparison.OrdinalIgnoreCase)) continue;
-            if (line.Contains("Mindestens", StringComparison.OrdinalIgnoreCase)) continue;
 
-            var match = Regex.Match(line,
-                @"^(?<name>.+?)\s+(?<id>[A-Za-z0-9][A-Za-z0-9._+-]+)\s+(?<cur>\S+)\s+(?<avail>\S+)\s+(?<src>\S+)\s*$");
-            if (!match.Success) continue;
-            var id = match.Groups["id"].Value;
-            if (id.Equals("winget", StringComparison.OrdinalIgnoreCase)
-                || id.Equals("msstore", StringComparison.OrdinalIgnoreCase))
+        return ParseWingetUpgradeTable(output);
+    }
+
+    internal static IReadOnlyList<SoftwareUpdateItem> ParseWingetUpgradeJson(string json)
+    {
+        if (string.IsNullOrWhiteSpace(json) || json.IndexOf('{') < 0)
+        {
+            return [];
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(json[json.IndexOf('{')..]);
+            var items = new List<SoftwareUpdateItem>();
+            CollectWingetJsonPackages(doc.RootElement, items);
+            return items
+                .GroupBy(i => i.Id, StringComparer.OrdinalIgnoreCase)
+                .Select(g => g.First())
+                .OrderBy(i => i.Name, StringComparer.CurrentCultureIgnoreCase)
+                .ToList();
+        }
+        catch
+        {
+            return [];
+        }
+    }
+
+    private static void CollectWingetJsonPackages(JsonElement el, List<SoftwareUpdateItem> items)
+    {
+        if (el.ValueKind == JsonValueKind.Object)
+        {
+            if (el.TryGetProperty("PackageIdentifier", out var idEl)
+                || el.TryGetProperty("Id", out idEl))
+            {
+                var id = idEl.GetString() ?? "";
+                if (LooksLikeWingetId(id))
+                {
+                    var name = GetJsonString(el, "PackageName", "Name") ?? id;
+                    var cur = GetJsonString(el, "InstalledVersion", "Version") ?? "?";
+                    var avail = GetJsonString(el, "AvailableVersion")
+                                ?? FirstJsonArrayString(el, "AvailableVersions")
+                                ?? "?";
+                    var src = GetJsonString(el, "Source") ?? "winget";
+                    items.Add(new SoftwareUpdateItem
+                    {
+                        Id = id,
+                        Name = name,
+                        CurrentVersion = cur,
+                        AvailableVersion = avail,
+                        Kind = "Programm",
+                        Source = "winget",
+                        PackageSource = src
+                    });
+                }
+            }
+
+            foreach (var prop in el.EnumerateObject())
+            {
+                CollectWingetJsonPackages(prop.Value, items);
+            }
+        }
+        else if (el.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var child in el.EnumerateArray())
+            {
+                CollectWingetJsonPackages(child, items);
+            }
+        }
+    }
+
+    private static string? GetJsonString(JsonElement el, params string[] names)
+    {
+        foreach (var name in names)
+        {
+            if (el.TryGetProperty(name, out var p) && p.ValueKind == JsonValueKind.String)
+            {
+                return p.GetString();
+            }
+        }
+
+        return null;
+    }
+
+    private static string? FirstJsonArrayString(JsonElement el, string name)
+    {
+        if (!el.TryGetProperty(name, out var arr) || arr.ValueKind != JsonValueKind.Array)
+        {
+            return null;
+        }
+
+        foreach (var x in arr.EnumerateArray())
+        {
+            if (x.ValueKind == JsonValueKind.String)
+            {
+                return x.GetString();
+            }
+        }
+
+        return null;
+    }
+
+    internal static IReadOnlyList<SoftwareUpdateItem> ParseWingetUpgradeTable(string output)
+    {
+        var lines = output.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries)
+            .Select(l => l.TrimEnd())
+            .Where(l => l.Length > 0)
+            .ToList();
+
+        var headerIndex = lines.FindIndex(l =>
+            l.Contains("Id", StringComparison.OrdinalIgnoreCase)
+            && (l.StartsWith("Name", StringComparison.OrdinalIgnoreCase)
+                || l.Contains(" Name ", StringComparison.OrdinalIgnoreCase)
+                || Regex.IsMatch(l, @"^Name\s+Id\b", RegexOptions.IgnoreCase)));
+        if (headerIndex < 0)
+        {
+            return ParseWingetUpgradeFallback(lines);
+        }
+
+        var header = lines[headerIndex];
+        var idAt = IndexOfColumn(header, "Id");
+        var versionAt = IndexOfColumn(header, "Version");
+        var availableAt = IndexOfColumn(header, "Available");
+        if (availableAt < 0) availableAt = IndexOfColumn(header, "Verfügbar");
+        var sourceAt = IndexOfColumn(header, "Source");
+        if (sourceAt < 0) sourceAt = IndexOfColumn(header, "Quelle");
+
+        if (idAt < 0 || versionAt < 0 || availableAt < 0)
+        {
+            return ParseWingetUpgradeFallback(lines);
+        }
+
+        var items = new List<SoftwareUpdateItem>();
+        for (var i = headerIndex + 1; i < lines.Count; i++)
+        {
+            var line = lines[i];
+            if (line.StartsWith('-') || line.All(c => c is '-' or ' ')) continue;
+            if (line.Contains("Aktualisierungen verfügbar", StringComparison.OrdinalIgnoreCase)) continue;
+            if (line.Contains("upgrades available", StringComparison.OrdinalIgnoreCase)) continue;
+            if (line.StartsWith("Mindestens", StringComparison.OrdinalIgnoreCase)) continue;
+            if (line.Length <= idAt) continue;
+
+            var id = SliceColumn(line, idAt, versionAt).Trim();
+            if (string.IsNullOrWhiteSpace(id)
+                || id.Equals("winget", StringComparison.OrdinalIgnoreCase)
+                || id.Equals("msstore", StringComparison.OrdinalIgnoreCase)
+                || !LooksLikeWingetId(id))
             {
                 continue;
             }
 
+            var name = SliceColumn(line, 0, idAt).Trim();
+            var cur = SliceColumn(line, versionAt, availableAt).Trim();
+            var avail = sourceAt > availableAt
+                ? SliceColumn(line, availableAt, sourceAt).Trim()
+                : line[Math.Min(availableAt, line.Length)..].Trim().Split(' ', 2)[0];
+            var pkgSource = sourceAt >= 0 && sourceAt < line.Length
+                ? line[sourceAt..].Trim().Split(' ', 2)[0]
+                : "winget";
+
+            if (string.IsNullOrWhiteSpace(name)) name = id;
+
+            items.Add(new SoftwareUpdateItem
+            {
+                Id = id,
+                Name = name,
+                CurrentVersion = string.IsNullOrWhiteSpace(cur) ? "?" : cur,
+                AvailableVersion = string.IsNullOrWhiteSpace(avail) ? "?" : avail,
+                Kind = "Programm",
+                Source = "winget",
+                PackageSource = string.IsNullOrWhiteSpace(pkgSource) ? "winget" : pkgSource
+            });
+        }
+
+        return items
+            .GroupBy(i => i.Id, StringComparer.OrdinalIgnoreCase)
+            .Select(g => g.First())
+            .OrderBy(i => i.Name, StringComparer.CurrentCultureIgnoreCase)
+            .ToList();
+    }
+
+    private static IReadOnlyList<SoftwareUpdateItem> ParseWingetUpgradeFallback(IReadOnlyList<string> lines)
+    {
+        var items = new List<SoftwareUpdateItem>();
+        // Id oft Publisher.Product — am Zeilenende vor Versionen suchen
+        var row = new Regex(
+            @"^(?<name>.+?)\s+(?<id>[A-Za-z0-9][A-Za-z0-9._+-]*\.[A-Za-z0-9._+-]+)\s+(?<cur>\S+)\s+(?<avail>\S+)(?:\s+(?<src>\S+))?\s*$",
+            RegexOptions.Compiled);
+        foreach (var line in lines)
+        {
+            if (line.StartsWith('-') || line.StartsWith("Name", StringComparison.OrdinalIgnoreCase)) continue;
+            var match = row.Match(line);
+            if (!match.Success) continue;
+            var id = match.Groups["id"].Value;
+            if (!LooksLikeWingetId(id)) continue;
             items.Add(new SoftwareUpdateItem
             {
                 Id = id,
@@ -280,65 +475,78 @@ public sealed class SoftwareUpdateService
                 CurrentVersion = match.Groups["cur"].Value,
                 AvailableVersion = match.Groups["avail"].Value,
                 Kind = "Programm",
-                Source = "winget"
+                Source = "winget",
+                PackageSource = match.Groups["src"].Success ? match.Groups["src"].Value : "winget"
             });
         }
 
         return items;
     }
 
-    private static string InstallWinget(string id, string displayName, IProgress<string>? progress = null)
+    private static bool LooksLikeWingetId(string id) =>
+        id.Contains('.') && id.Length >= 3 && !id.Contains(' ');
+
+    private static int IndexOfColumn(string header, string name)
+    {
+        // Prefer whole-word column title at start of a field (preceded by start or 2+ spaces)
+        var pattern = $@"(?:^|(?<=\s{{2}})){Regex.Escape(name)}(?=\s{{2,}}|$)";
+        var m = Regex.Match(header, pattern, RegexOptions.IgnoreCase);
+        return m.Success ? m.Index : -1;
+    }
+
+    private static string SliceColumn(string line, int start, int endExclusive)
+    {
+        if (start < 0) return "";
+        if (start >= line.Length) return "";
+        if (endExclusive <= start || endExclusive > line.Length)
+        {
+            return line[start..];
+        }
+
+        return line[start..endExclusive];
+    }
+
+    private static string InstallWinget(
+        string id,
+        string displayName,
+        string packageSource,
+        IProgress<string>? progress = null)
     {
         try
         {
-            // -e = exakte Id; ohne Admin scheitern viele Maschinen-Installationen
-            var args =
-                $"upgrade --id \"{id}\" -e --source winget " +
-                "--accept-package-agreements --accept-source-agreements " +
-                "--disable-interactivity --silent --force";
-            using var p = Process.Start(new ProcessStartInfo
+            if (!LooksLikeWingetId(id))
             {
-                FileName = "winget",
-                Arguments = args,
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                StandardOutputEncoding = Encoding.UTF8,
-                StandardErrorEncoding = Encoding.UTF8
-            });
-            if (p is null)
-            {
-                return $"✗ {displayName}: winget konnte nicht gestartet werden.";
+                return $"✗ {displayName}: Ungültige Paket-Id „{id}“ (Listenfehler). Bitte Liste aktualisieren.";
             }
 
-            var log = new StringBuilder();
-            var lastLine = $"{displayName}: wird installiert …";
-            void OnLine(string? data)
+            // 1) mit gemeldeter Quelle, 2) ohne Source-Filter
+            var attempts = new List<string>();
+            if (!string.IsNullOrWhiteSpace(packageSource))
             {
-                if (string.IsNullOrWhiteSpace(data)) return;
-                lastLine = data.Trim();
-                log.AppendLine(lastLine);
-                progress?.Report($"{displayName}: {lastLine}");
+                attempts.Add(BuildWingetUpgradeArgs(id, packageSource));
             }
 
-            p.OutputDataReceived += (_, e) => OnLine(e.Data);
-            p.ErrorDataReceived += (_, e) => OnLine(e.Data);
-            p.BeginOutputReadLine();
-            p.BeginErrorReadLine();
-            if (!p.WaitForExit(600_000))
+            attempts.Add(BuildWingetUpgradeArgs(id, source: null));
+
+            string? lastFail = null;
+            foreach (var args in attempts.Distinct(StringComparer.Ordinal))
             {
-                try { p.Kill(entireProcessTree: true); } catch { /* ignore */ }
-                return $"✗ {displayName}: Zeitüberschreitung (winget > 10 Min).";
+                progress?.Report($"{displayName}: winget {args}");
+                var (exit, log, lastLine) = RunWingetUpgrade(args, displayName, progress);
+                if (exit == 0)
+                {
+                    return $"✓ {displayName} aktualisiert.";
+                }
+
+                lastFail = WingetExitHint(exit, log, lastLine, id);
+                // Bei „kein Installer“ / falsche Quelle: nächsten Versuch
+                if (exit != -1978335212 && !lastFail.Contains("Kein passender Installer", StringComparison.Ordinal))
+                {
+                    break;
+                }
             }
 
-            if (p.ExitCode == 0)
-            {
-                return $"✓ {displayName} aktualisiert.";
-            }
-
-            var hint = WingetExitHint(p.ExitCode, log.ToString(), lastLine);
-            return $"✗ {displayName}: {hint}";
+            return $"✗ {displayName}: {lastFail ?? "Update fehlgeschlagen."}";
         }
         catch (Exception ex)
         {
@@ -346,7 +554,59 @@ public sealed class SoftwareUpdateService
         }
     }
 
-    private static string WingetExitHint(int exitCode, string log, string lastLine)
+    private static string BuildWingetUpgradeArgs(string id, string? source)
+    {
+        var src = string.IsNullOrWhiteSpace(source) ? "" : $" --source {source}";
+        return $"upgrade --id \"{id}\" -e{src} " +
+               "--accept-package-agreements --accept-source-agreements " +
+               "--disable-interactivity --silent";
+    }
+
+    private static (int ExitCode, string Log, string LastLine) RunWingetUpgrade(
+        string args,
+        string displayName,
+        IProgress<string>? progress)
+    {
+        using var p = Process.Start(new ProcessStartInfo
+        {
+            FileName = "winget",
+            Arguments = args,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            StandardOutputEncoding = Encoding.UTF8,
+            StandardErrorEncoding = Encoding.UTF8
+        });
+        if (p is null)
+        {
+            return (1, "", "winget konnte nicht gestartet werden.");
+        }
+
+        var log = new StringBuilder();
+        var lastLine = $"{displayName}: wird installiert …";
+        void OnLine(string? data)
+        {
+            if (string.IsNullOrWhiteSpace(data)) return;
+            lastLine = data.Trim();
+            log.AppendLine(lastLine);
+            progress?.Report($"{displayName}: {lastLine}");
+        }
+
+        p.OutputDataReceived += (_, e) => OnLine(e.Data);
+        p.ErrorDataReceived += (_, e) => OnLine(e.Data);
+        p.BeginOutputReadLine();
+        p.BeginErrorReadLine();
+        if (!p.WaitForExit(600_000))
+        {
+            try { p.Kill(entireProcessTree: true); } catch { /* ignore */ }
+            return (1, log.ToString(), "Zeitüberschreitung (winget > 10 Min).");
+        }
+
+        return (p.ExitCode, log.ToString(), lastLine);
+    }
+
+    private static string WingetExitHint(int exitCode, string log, string lastLine, string id)
     {
         var blob = (log + "\n" + lastLine).ToLowerInvariant();
         if (blob.Contains("requires elevation") || blob.Contains("administrator") || blob.Contains("access is denied")
@@ -368,7 +628,7 @@ public sealed class SoftwareUpdateService
 
         if (exitCode == -1978335212)
         {
-            return "Kein passender Installer für dieses System (winget).";
+            return $"Kein passender Installer (Id „{id}“). Oft falsche Id in der Liste oder Architektur/Store-Paket — Liste aktualisieren, ggf. als Administrator.";
         }
 
         var shortLast = lastLine.Length > 120 ? lastLine[..120] + "…" : lastLine;
