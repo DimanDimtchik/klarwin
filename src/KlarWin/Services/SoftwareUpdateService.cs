@@ -25,6 +25,8 @@ public sealed class SoftwareInstallBatchResult
     public IReadOnlyList<string> Lines { get; init; } = [];
     public int Succeeded { get; init; }
     public int Failed { get; init; }
+    /// <summary>Already current / no actionable winget upgrade (not counted as failure).</summary>
+    public int Skipped { get; init; }
     public IReadOnlyList<string> AttemptedIds { get; init; } = [];
     /// <summary>Packages that failed specifically because elevation was required.</summary>
     public IReadOnlyList<SoftwareUpdateItem> AdminBlockedItems { get; init; } = [];
@@ -33,12 +35,29 @@ public sealed class SoftwareInstallBatchResult
 
     public string SummaryText => string.Join("\n", Lines.Where(n => !string.IsNullOrWhiteSpace(n)));
 
+    public string ResultHeadline
+    {
+        get
+        {
+            var parts = new List<string> { $"{Succeeded} erfolgreich" };
+            if (Skipped > 0) parts.Add($"{Skipped} übersprungen");
+            if (Failed > 0) parts.Add($"{Failed} fehlgeschlagen");
+            return "Ergebnis: " + string.Join(", ", parts) + ".";
+        }
+    }
+
     public static bool IsAdminRequiredMessage(string line) =>
         line.Contains("Benötigt Administratorrechte", StringComparison.OrdinalIgnoreCase)
         || line.Contains("requires elevation", StringComparison.OrdinalIgnoreCase)
         || line.Contains("Administratorrechte nötig", StringComparison.OrdinalIgnoreCase)
         || line.Contains("als Administrator starten", StringComparison.OrdinalIgnoreCase)
         || line.Contains("als Administrator ausführen", StringComparison.OrdinalIgnoreCase);
+
+    public static bool IsSkippedMessage(string line) =>
+        line.StartsWith('○')
+        || line.Contains("kein Upgrade nötig", StringComparison.OrdinalIgnoreCase)
+        || line.Contains("bereits aktuell", StringComparison.OrdinalIgnoreCase)
+        || line.Contains("nicht über winget aktualisierbar", StringComparison.OrdinalIgnoreCase);
 }
 
 public sealed class SoftwareUpdateService
@@ -126,6 +145,7 @@ public sealed class SoftwareUpdateService
         var step = 0;
         var succeeded = 0;
         var failed = 0;
+        var skipped = 0;
 
         void ReportStep(string headline, string detail, bool indeterminate = true)
         {
@@ -164,6 +184,10 @@ public sealed class SoftwareUpdateService
             {
                 succeeded++;
             }
+            else if (SoftwareInstallBatchResult.IsSkippedMessage(line))
+            {
+                skipped++;
+            }
             else
             {
                 failed++;
@@ -172,11 +196,16 @@ public sealed class SoftwareUpdateService
             }
 
             step++;
+            var headline = line.StartsWith('✓')
+                ? $"{app.Name} fertig"
+                : SoftwareInstallBatchResult.IsSkippedMessage(line)
+                    ? $"{app.Name} — übersprungen"
+                    : $"{app.Name} — fehlgeschlagen";
             progress?.Report(new SoftwareInstallProgress
             {
                 Step = step,
                 Total = total,
-                Headline = line.StartsWith('✓') ? $"{app.Name} fertig" : $"{app.Name} — fehlgeschlagen",
+                Headline = headline,
                 Detail = line,
                 IsIndeterminate = false
             });
@@ -193,6 +222,10 @@ public sealed class SoftwareUpdateService
             if (line.StartsWith('✓'))
             {
                 succeeded++;
+            }
+            else if (SoftwareInstallBatchResult.IsSkippedMessage(line))
+            {
+                skipped++;
             }
             else
             {
@@ -218,6 +251,7 @@ public sealed class SoftwareUpdateService
             Lines = notes,
             Succeeded = succeeded,
             Failed = failed,
+            Skipped = skipped,
             AttemptedIds = attemptedIds,
             AdminBlockedItems = adminBlocked
         };
@@ -295,7 +329,7 @@ public sealed class SoftwareUpdateService
         var fromJson = ParseWingetUpgradeJson(json);
         if (fromJson.Count > 0)
         {
-            return fromJson;
+            return FilterActionableUpgrades(fromJson);
         }
 
         // 2) Tabelle über Spaltenköpfe (nicht Regex über Leerzeichen —
@@ -305,7 +339,57 @@ public sealed class SoftwareUpdateService
             "upgrade --accept-source-agreements --disable-interactivity",
             WingetListTimeoutMs);
 
-        return ParseWingetUpgradeTable(output);
+        return FilterActionableUpgrades(ParseWingetUpgradeTable(output));
+    }
+
+    /// <summary>
+    /// Drop packages where installed and available versions are the same —
+    /// winget sometimes still lists them, then fails with „no available upgrade“.
+    /// </summary>
+    internal static IReadOnlyList<SoftwareUpdateItem> FilterActionableUpgrades(
+        IReadOnlyList<SoftwareUpdateItem> items) =>
+        items.Where(HasVersionBump).ToList();
+
+    internal static bool HasVersionBump(SoftwareUpdateItem item)
+    {
+        var cur = NormalizeVersionLabel(item.CurrentVersion);
+        var avail = NormalizeVersionLabel(item.AvailableVersion);
+        if (string.IsNullOrWhiteSpace(cur) || string.IsNullOrWhiteSpace(avail))
+            return true;
+        if (cur is "?" or "-" || avail is "?" or "-")
+            return true;
+
+        if (string.Equals(cur, avail, StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        if (Version.TryParse(PadVersion(cur), out var cv)
+            && Version.TryParse(PadVersion(avail), out var av))
+        {
+            return av > cv;
+        }
+
+        // Unknown format but not identical — keep so the user can try.
+        return true;
+    }
+
+    private static string NormalizeVersionLabel(string? version)
+    {
+        if (string.IsNullOrWhiteSpace(version)) return "";
+        var v = version.Trim();
+        if (v.StartsWith('v') || v.StartsWith('V'))
+            v = v[1..].Trim();
+        return v;
+    }
+
+    private static string PadVersion(string version)
+    {
+        // Version.TryParse wants at least Major.Minor
+        var parts = version.Split('.');
+        return parts.Length switch
+        {
+            1 => version + ".0",
+            _ => version
+        };
     }
 
     internal static IReadOnlyList<SoftwareUpdateItem> ParseWingetUpgradeJson(string json)
@@ -570,11 +654,22 @@ public sealed class SoftwareUpdateService
                 }
 
                 lastFail = WingetExitHint(exit, log, lastLine, id);
+                if (IsNoUpgradeHint(lastFail) || IsNonWingetUpgradeableHint(lastFail))
+                {
+                    return $"○ {displayName}: {lastFail}";
+                }
+
                 // Bei „kein Installer“ / falsche Quelle: nächsten Versuch
                 if (exit != -1978335212 && !lastFail.Contains("Kein passender Installer", StringComparison.Ordinal))
                 {
                     break;
                 }
+            }
+
+            if (!string.IsNullOrWhiteSpace(lastFail)
+                && (IsNoUpgradeHint(lastFail) || IsNonWingetUpgradeableHint(lastFail)))
+            {
+                return $"○ {displayName}: {lastFail}";
             }
 
             return $"✗ {displayName}: {lastFail ?? "Update fehlgeschlagen."}";
@@ -584,6 +679,14 @@ public sealed class SoftwareUpdateService
             return $"✗ {displayName}: {UserFriendlyErrors.Translate(ex)}";
         }
     }
+
+    private static bool IsNoUpgradeHint(string hint) =>
+        hint.Contains("kein Upgrade", StringComparison.OrdinalIgnoreCase)
+        || hint.Contains("bereits aktuell", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsNonWingetUpgradeableHint(string hint) =>
+        hint.Contains("nicht über winget aktualisierbar", StringComparison.OrdinalIgnoreCase)
+        || hint.Contains("Installationstechnologie", StringComparison.OrdinalIgnoreCase);
 
     private static string BuildWingetUpgradeArgs(string id, string? source)
     {
@@ -650,7 +753,15 @@ public sealed class SoftwareUpdateService
         if (blob.Contains("no newer package versions") || blob.Contains("keine neueren")
             || blob.Contains("no available upgrade") || exitCode == -1978335189)
         {
-            return "winget meldet kein Upgrade (vielleicht schon aktuell oder andere Architektur).";
+            return "bereits aktuell — kein Upgrade nötig.";
+        }
+
+        // Edge etc.: newer build exists, but MSI vs Store / different installer family
+        if (blob.Contains("install technology") || blob.Contains("installation technology")
+            || blob.Contains("installationstechnologie") || blob.Contains("installer type")
+            || blob.Contains("unterschiedet sich jedoch"))
+        {
+            return "nicht über winget aktualisierbar (andere Installationstechnologie) — bitte über die App selbst oder Windows Update.";
         }
 
         if (blob.Contains("installer hash") || blob.Contains("hash mismatch"))
